@@ -1,3 +1,11 @@
+//
+//  WatchedLog.swift
+//  Cinemax
+//
+//  Created by Raffaele Prota on 19/12/25.
+//
+
+
 import Foundation
 
 struct WatchedLog: Codable {
