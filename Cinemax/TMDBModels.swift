@@ -17,7 +17,7 @@ struct TMDBMovie: Codable, Identifiable {
     let id: Int
     let title: String?        // I film hanno 'title'
     let name: String?         // Le serie hanno 'name'
-    let overview: String
+    let overview: String?
     let posterPath: String?   // es: "/abc1234.jpg"
     let backdropPath: String? // Immagine grande orizzontale
     let voteAverage: Double?

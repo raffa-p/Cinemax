@@ -112,7 +112,7 @@ class LibraryViewModel {
                     type: tmdbItem.title != nil ? .movie : .series,
                     matchPercentage: Int((tmdbItem.voteAverage ?? 0) * 10),
                     year: tmdbItem.displayYear,
-                    description: tmdbItem.overview,
+                    description: tmdbItem.overview ?? "Nessuna trama disponibile",
                     isWatched: false,
                     seasons: []
                 )
@@ -219,6 +219,52 @@ class LibraryViewModel {
         } catch { return nil }
     }
     
+    // MARK: - FIX RICERCA E AGGIORNAMENTO LISTA
+        func updateEpisodeStatus(tmdbId: Int, season: Int, episode: Int, isWatched: Bool, sourceItem: MediaItem? = nil) {
+            let key = generateKey(id: tmdbId, season: season, episode: episode)
+            
+            // 1. Aggiorna la Cache veloce
+            if isWatched { watchedSet.insert(key) } else { watchedSet.remove(key) }
+            
+            // 2. Aggiorna la lista 'items' (che alimenta la Home e 'La mia lista')
+            if let index = items.firstIndex(where: { $0.tmdbId == tmdbId }) {
+                // CASO A: La serie è già in lista -> Aggiorniamo l'episodio esistente
+                if let sIndex = items[index].seasons.firstIndex(where: { $0.number == season }) {
+                    if let eIndex = items[index].seasons[sIndex].episodes.firstIndex(where: { $0.number == episode }) {
+                        items[index].seasons[sIndex].episodes[eIndex].isWatched = isWatched
+                    }
+                }
+            } else if isWatched, var newItem = sourceItem {
+                // CASO B (NUOVO): La serie NON è in lista (viene dalla Ricerca) e l'abbiamo appena iniziata.
+                // Dobbiamo aggiungerla manualmente all'array 'items' così appare in "La mia lista".
+                
+                // Assicuriamoci che l'episodio specifico sia segnato come visto nel nuovo oggetto
+                if let sIndex = newItem.seasons.firstIndex(where: { $0.number == season }),
+                   let eIndex = newItem.seasons[sIndex].episodes.firstIndex(where: { $0.number == episode }) {
+                    newItem.seasons[sIndex].episodes[eIndex].isWatched = true
+                    
+                    // Aggiungiamo alla lista principale!
+                    items.append(newItem)
+                }
+            }
+            
+            // 3. Salva su Supabase
+            Task {
+                do {
+                    if isWatched {
+                        let log = WatchedLog(tmdbId: tmdbId, mediaType: "episode", seasonNumber: season, episodeNumber: episode)
+                        try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
+                    } else {
+                        try await SupabaseManager.shared.client.from("watched_items").delete()
+                            .eq("tmdb_id", value: tmdbId).eq("media_type", value: "episode")
+                            .eq("season_number", value: season).eq("episode_number", value: episode).execute()
+                    }
+                } catch {
+                    print("Errore salvataggio episodio DB: \(error)")
+                }
+            }
+        }
+    
     // MARK: - GESTIONE SUPABASE
     
     func fetchUserHistory() async {
@@ -297,7 +343,7 @@ class LibraryViewModel {
         }
     }
     
-
+    
     // 1. Modifica questa funzione per restituire MediaItem
     @discardableResult
     func loadEpisodes(for item: MediaItem) async -> MediaItem {
@@ -343,7 +389,7 @@ class LibraryViewModel {
         
         return updatedItem // <--- IMPORTANTE: Restituisce l'item aggiornato
     }
-
+    
     // 2. Modifica anche questa
     @discardableResult
     func loadMovieDuration(for item: MediaItem) async -> MediaItem {
@@ -371,7 +417,7 @@ class LibraryViewModel {
         
         return updatedItem // <--- IMPORTANTE
     }
-
+}
 // MARK: - 4. VIEWS
 
 struct ContentView: View {
@@ -401,7 +447,7 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         
                         if let hero = viewModel.heroMovie {
-                            HeroSection(item: hero) {
+                            HeroSection(item: hero, viewModel: viewModel) {
                                 viewModel.toggleItemWatched(itemId: hero.id)
                             }
                         }
@@ -427,53 +473,73 @@ struct HomeView: View {
 
 struct HeroSection: View {
     let item: MediaItem
+    var viewModel: LibraryViewModel
     var onToggleWatched: () -> Void
     
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Sfondo con immagine scaricata
-            GeometryReader { geo in
-                if let url = URL(string: item.imageName) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: geo.size.width, height: 550)
-                                .clipped()
-                        } else {
-                            // Sfondo colorato mentre carica
-                            LinearGradient(colors: [.blue.opacity(0.3), .black], startPoint: .top, endPoint: .bottom)
+            
+            // 1. NAVIGAZIONE (Rende l'immagine cliccabile)
+            NavigationLink(destination: DetailView(item: item, viewModel: viewModel)) {
+                ZStack(alignment: .bottom) {
+                    // Immagine di Sfondo
+                    GeometryReader { geo in
+                        if let url = URL(string: item.imageName) {
+                            AsyncImage(url: url) { phase in
+                                if let image = phase.image {
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: geo.size.width, height: 550)
+                                        .clipped()
+                                } else {
+                                    LinearGradient(colors: [.blue.opacity(0.3), .black], startPoint: .top, endPoint: .bottom)
+                                }
+                            }
                         }
                     }
+                    .frame(height: 550)
+                    
+                    // Sfumatura nera (Parte del link, così anche cliccando in basso apri i dettagli)
+                    LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom)
                 }
             }
-            .frame(height: 550)
+            .buttonStyle(PlainButtonStyle()) // Rimuove l'effetto blu/grigio del link standard
             
-            // Sfumatura nera sopra l'immagine (per leggere il testo)
-            LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom)
-            
+            // 2. CONTENUTO TESTUALE (Sopra l'immagine)
             VStack(spacing: 16) {
                 Text(item.type.rawValue.uppercased())
                     .font(.caption).bold().tracking(2).foregroundColor(.gray)
+                    .allowsHitTesting(false) // Il tocco passa attraverso il testo per andare al Link
                 
                 Text(item.title)
-                    .font(.system(size: 40, weight: .heavy)) // Font un po' più piccolo per titoli lunghi
+                    .font(.system(size: 40, weight: .heavy))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .shadow(color: .black, radius: 10)
                     .padding(.horizontal)
+                    .allowsHitTesting(false) // Il tocco passa attraverso il titolo
                 
-                Button(action: onToggleWatched) {
-                    HStack {
-                        Image(systemName: item.isWatched ? "checkmark.circle.fill" : "circle")
-                        Text(item.isWatched ? "Visto" : "Segna come visto")
-                            .bold()
+                // 3. BOTTONE (Solo per i FILM)
+                if item.type == .movie {
+                    Button(action: onToggleWatched) {
+                        HStack {
+                            Image(systemName: item.isWatched ? "checkmark.circle.fill" : "circle")
+                            Text(item.isWatched ? "Visto" : "Segna come visto")
+                                .bold()
+                        }
+                        .padding(.vertical, 12).padding(.horizontal, 30)
+                        .background(item.isWatched ? Color.green : Color.white)
+                        .foregroundColor(item.isWatched ? .white : .black)
+                        .cornerRadius(8)
                     }
-                    .padding(.vertical, 12).padding(.horizontal, 30)
-                    .background(item.isWatched ? Color.green : Color.white)
-                    .foregroundColor(item.isWatched ? .white : .black)
-                    .cornerRadius(8)
+                } else {
+                    // Per le serie, aggiungiamo un testo "Vedi Episodi" o solo spazio vuoto
+                    // che invita a cliccare sull'immagine
+                    Text("Tocca per gli episodi")
+                        .font(.caption)
+                        .foregroundColor(.gray.opacity(0.8))
+                        .padding(.top, 5)
                 }
             }
             .padding(.bottom, 40)
@@ -605,22 +671,23 @@ struct MediaCard: View {
 
 // MARK: - DETAIL VIEW (Con gestione episodi)
 
-struct DetailView: View {
-    let item: MediaItem
-    var viewModel: LibraryViewModel
-    
-    // Per gestire lo stato del picker stagioni localmente
-    @State private var selectedSeasonId: UUID?
-    
-    @State private var enrichedItem: MediaItem?
-    
-    // Troviamo l'item aggiornato dal ViewModel per avere lo stato "live" (reattivo)
-    var liveItem: MediaItem {
+    struct DetailView: View {
+        let item: MediaItem
+        var viewModel: LibraryViewModel
+        
+        // Per gestire lo stato del picker stagioni localmente
+        @State private var selectedSeasonId: UUID?
+        
+        @State private var enrichedItem: MediaItem?
+        
+        // Troviamo l'item aggiornato dal ViewModel per avere lo stato "live" (reattivo)
+        var liveItem: MediaItem {
             if let homeItem = viewModel.items.first(where: { $0.id == item.id }) {
                 return homeItem
             } else {
                 return enrichedItem ?? item // <--- Se non è in home, usa quello scaricato o l'originale
             }
+        }
     
     var body: some View {
         ScrollView {
@@ -770,11 +837,37 @@ struct DetailView: View {
                                     
                                     // Checkbox Singolo Episodio
                                     Button(action: {
-                                        viewModel.toggleEpisodeWatched(itemId: liveItem.id, seasonId: season.id, episodeId: episode.id)
+                                        // 1. Calcoliamo il nuovo stato (opposto di quello attuale)
+                                        let newState = !episode.isWatched
+                                        
+                                        // 2. AGGIORNAMENTO LOCALE (Per la Ricerca)
+                                        // Se stiamo visualizzando enrichedItem (Ricerca), dobbiamo aggiornarlo manualmente
+                                        // altrimenti la spunta verde non appare
+                                        if var enriched = enrichedItem, enriched.id == liveItem.id {
+                                            if let sIndex = enriched.seasons.firstIndex(where: { $0.id == season.id }),
+                                               let eIndex = enriched.seasons[sIndex].episodes.firstIndex(where: { $0.id == episode.id }) {
+                                                
+                                                // Modifichiamo la copia locale per feedback istantaneo
+                                                enrichedItem?.seasons[sIndex].episodes[eIndex].isWatched = newState
+                                            }
+                                        }
+                                        
+                                        // 3. AGGIORNAMENTO LOGICO (Database + Home)
+                                        // Usiamo la nuova funzione che accetta ID diretti
+                                        if let tmdbId = item.tmdbId {
+                                            viewModel.updateEpisodeStatus(
+                                                tmdbId: tmdbId,
+                                                season: season.number,
+                                                episode: episode.number,
+                                                isWatched: newState,
+                                                sourceItem: liveItem 
+                                            )
+                                        }
+                                        
                                     }) {
                                         Image(systemName: episode.isWatched ? "checkmark.circle.fill" : "circle")
                                             .font(.title2)
-                                            .foregroundColor(episode.isWatched ? .red : .gray)
+                                            .foregroundColor(episode.isWatched ? .red : .gray) // Ho visto che usavi .red, ottimo
                                             .padding(.leading, 4)
                                     }
                                 }
@@ -795,16 +888,29 @@ struct DetailView: View {
             }
         }
         .task {
-            if liveItem.type == .series {
-                await viewModel.loadEpisodes(for: item)
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if selectedSeasonId == nil {
-                    if let updatedItem = viewModel.items.first(where: { $0.id == item.id }) {
-                        selectedSeasonId = updatedItem.seasons.first?.id
+            // 1. Se è una SERIE
+            if item.type == .series {
+                // Scarichiamo e CATTURIAMO il risultato nella variabile 'updated'
+                let updated = await viewModel.loadEpisodes(for: item)
+                
+                await MainActor.run {
+                    // Salviamo il risultato nello stato locale della vista
+                    self.enrichedItem = updated
+                    
+                    // Selezioniamo la prima stagione automaticamente
+                    if selectedSeasonId == nil {
+                        selectedSeasonId = updated.seasons.first?.id
                     }
                 }
-            } else if liveItem.type == .movie {
-                await viewModel.loadMovieDuration(for: item)
+            }
+            // 2. Se è un FILM
+            else if item.type == .movie {
+                let updated = await viewModel.loadMovieDuration(for: item)
+                
+                await MainActor.run {
+                    // Salviamo la durata scaricata
+                    self.enrichedItem = updated
+                }
             }
         }
     }

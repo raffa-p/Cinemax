@@ -47,7 +47,7 @@ class SearchViewModel {
                         type: tmdbItem.title != nil ? .movie : .series,
                         matchPercentage: Int((tmdbItem.voteAverage ?? 0) * 10),
                         year: tmdbItem.displayYear,
-                        description: tmdbItem.overview,
+                        description: tmdbItem.overview ?? "Nessuna trama disponibile",
                         isWatched: false,
                         seasons: []
                     )
