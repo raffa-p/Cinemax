@@ -60,7 +60,6 @@ class MovieService {
     }
 
     func searchMedia(query: String) async throws -> [TMDBMovie] {
-        // Codifica la query per gestire spazi e caratteri speciali (es. "Harry Potter" -> "Harry%20Potter")
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             throw URLError(.badURL)
         }
@@ -76,5 +75,17 @@ class MovieService {
         
         // Filtriamo via le persone (l'API search/multi restituisce anche attori, ma noi vogliamo solo film/serie)
         return decodedResponse.results.filter { $0.mediaType != "person" }
+    }
+    
+    func fetchMediaDetails(id: Int, type: String) async throws -> TMDBMovie {
+        let endpoint = (type == "movie") ? "movie" : "tv"
+        
+        let urlString = "https://api.themoviedb.org/3/\(endpoint)/\(id)?api_key=\(apiKey)&language=it-IT"
+        
+        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
+        
+        let (data, _) = try await URLSession.shared.data(from: url)
+        
+        return try JSONDecoder().decode(TMDBMovie.self, from: data)
     }
 }

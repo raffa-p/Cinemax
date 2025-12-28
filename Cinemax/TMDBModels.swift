@@ -93,3 +93,12 @@ struct TMDBMovieDetails: Codable {
     let runtime: Int? // Durata in minuti
 }
 
+struct PersonalListEntry: Codable {
+    let tmdbId: Int
+    let mediaType: String
+    
+    enum CodingKeys: String, CodingKey {
+        case tmdbId = "tmdb_id"
+        case mediaType = "media_type"
+    }
+}

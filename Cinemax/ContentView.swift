@@ -44,12 +44,12 @@ struct MediaItem: Identifiable, Hashable {
     let description: String
     var duration: String?
     var isWatched: Bool = false
+    var inMyList: Bool = false
     var isInProgress: Bool {
             guard type == .series else { return false }
             return watchedEpisodes > 0 && watchedEpisodes < totalEpisodes
         }
     
-    // Ora supportiamo le stagioni (vuoto per i film)
     var seasons: [Season] = []
     
     // Helper per ottenere l'episodio corrente o statistiche
@@ -74,7 +74,7 @@ class LibraryViewModel {
     var trendingMedia: [MediaItem] { items }
     
     // Filtro: Serie iniziate (almeno 1 episodio visto, ma non tutti)
-    var myList: [MediaItem] {
+    var keepWatching: [MediaItem] {
         return items.filter { item in
             if item.type == .series {
                 return item.isInProgress
@@ -84,91 +84,211 @@ class LibraryViewModel {
         }
     }
     
+    var personalList_: [MediaItem] {
+        return items.filter { $0.inMyList }
+    }
+    
     // Cache locale degli ID visti
     private var watchedSet: Set<String> = []
+    private var personalListSet: Set<String> = []
     
     init() {
-        Task {
-            // 1. Prima scarichiamo lo storico (così sappiamo cosa spuntare mentre scarichiamo gli episodi)
-            await fetchUserHistory()
+            Task {
+                // 1. Scarichiamo Storico e Lista Personale in parallelo
+                // Usiamo async let per farli partire insieme e risparmiare tempo
+                async let historyTask: () = fetchUserHistory()
+                async let listTask: () = fetchUserPersonalList()
+                
+                _ = await (historyTask, listTask)
+                
+                // 2. Ora scarichiamo i contenuti (Trending/Popular)
+                await loadRealDataAndEnrich()
+            }
+        }
+    
+    // MARK: - CARICAMENTO MASSIVO (EAGER LOADING)
+    func fetchUserPersonalList() async {
+        do {
+            // Chiamata a Supabase
+            let entries: [PersonalListEntry] = try await SupabaseManager.shared.client
+                .from("PersonalList")
+                .select()
+                .execute()
+                .value
             
-            // 2. Poi scarichiamo i contenuti e subito dopo gli episodi
-            await loadRealDataAndEnrich()
+            // Aggiorniamo il Set locale
+            self.personalListSet = Set(entries.map { "\($0.mediaType)_\($0.tmdbId)" })
+            
+            print("Lista personale caricata: \(self.personalListSet.count) elementi")
+            
+        } catch {
+            print("Errore fetch PersonalList: \(error)")
         }
     }
     
-    // MARK: - CARICAMENTO MASSIVO (EAGER LOADING)
-    
-    func loadRealDataAndEnrich() async {
-        do {
-            // A. SCARICAMENTO BASE (Locandine)
-            let tmdbResults = try await MovieService.shared.fetchTrending()
-            
-            var initialItems = tmdbResults.map { tmdbItem in
-                MediaItem(
-                    tmdbId: tmdbItem.id,
-                    title: tmdbItem.displayTitle,
-                    imageName: tmdbItem.fullPosterURL?.absoluteString ?? "",
-                    type: tmdbItem.title != nil ? .movie : .series,
-                    matchPercentage: Int((tmdbItem.voteAverage ?? 0) * 10),
-                    year: tmdbItem.displayYear,
-                    description: tmdbItem.overview ?? "Nessuna trama disponibile",
-                    isWatched: false,
-                    seasons: []
-                )
-            }
-            
-            // Applichiamo subito i "Visti" ai FILM (le serie devono aspettare gli episodi)
-            for i in 0..<initialItems.count {
-                if initialItems[i].type == .movie, let tmdbId = initialItems[i].tmdbId {
-                    let key = generateKey(id: tmdbId, season: nil, episode: nil)
-                    if watchedSet.contains(key) {
-                        initialItems[i].isWatched = true
+    func fetchMissingPersonalListItems() async {
+        let loadedIds = Set(items.compactMap { item -> String? in
+            guard let id = item.tmdbId else { return nil }
+            return "\(item.type.rawValue)_\(id)"
+        })
+        
+        let missingKeys = personalListSet.subtracting(loadedIds)
+        
+        guard !missingKeys.isEmpty else { return }
+        print("Recupero \(missingKeys.count) elementi della lista personale non presenti in home...")
+        
+        // 3. Scarichiamo i dati mancanti in parallelo
+        await withTaskGroup(of: MediaItem?.self) { group in
+            for key in missingKeys {
+                group.addTask {
+                    let components = key.components(separatedBy: "_")
+                    guard components.count == 2,
+                          let id = Int(components[1]) else { return nil }
+                    let typeRaw = components[0] // "movie" o "tv"
+                    
+                    do {
+                        
+                        let tmdbItem = try await MovieService.shared.fetchMediaDetails(id: id, type: typeRaw)
+                            
+                        
+                        var newItem = MediaItem(
+                            tmdbId: tmdbItem.id,
+                            title: tmdbItem.displayTitle,
+                            imageName: tmdbItem.fullPosterURL?.absoluteString ?? "",
+                            type: typeRaw == "movie" ? .movie : .series,
+                            matchPercentage: Int((tmdbItem.voteAverage ?? 0) * 10),
+                            year: tmdbItem.displayYear,
+                            description: tmdbItem.overview ?? "",
+                            isWatched: false,
+                            seasons: []
+                        )
+                        
+                        
+                        newItem.inMyList = true
+                        
+                        return newItem
+
+                    } catch {
+                        print("Errore fetch dettaglio mancante \(key): \(error)")
                     }
+                    return nil
                 }
             }
             
-            // Mostriamo subito le locandine all'utente (UI veloce)
-            await MainActor.run {
-                self.items = initialItems
-                self.heroMovie = initialItems.first
+            // 4. Raccogliamo i risultati e aggiorniamo la UI
+            var newItems: [MediaItem] = []
+            for await item in group {
+                if let item = item {
+                    newItems.append(item)
+                }
             }
             
-            // B. SCARICAMENTO EPISODI (Background Parallelo)
-            // Usiamo un TaskGroup per scaricare i dettagli di tutte le serie contemporaneamente
-            await withTaskGroup(of: MediaItem?.self) { group in
-                for item in initialItems {
-                    // Lanciamo un task per ogni contenuto
-                    group.addTask {
-                        if item.type == .series {
-                            // Se è una serie, scarichiamo tutto ORA
-                            return await self.fetchFullSeriesData(for: item)
-                        } else if item.type == .movie {
-                            // Se è un film, scarichiamo la durata ORA
-                            return await self.fetchMovieData(for: item)
+            if !newItems.isEmpty {
+                await MainActor.run {
+                    // Aggiungiamo i nuovi elementi alla lista esistente
+                    self.items.append(contentsOf: newItems)
+                    
+                }
+            }
+        }
+    }
+    
+    func loadRealDataAndEnrich() async {
+            do {
+                // A. SCARICAMENTO BASE (Locandine)
+                let tmdbResults = try await MovieService.shared.fetchTrending()
+                
+                var initialItems = tmdbResults.map { tmdbItem in
+                    MediaItem(
+                        tmdbId: tmdbItem.id,
+                        title: tmdbItem.displayTitle,
+                        imageName: tmdbItem.fullPosterURL?.absoluteString ?? "",
+                        type: tmdbItem.title != nil ? .movie : .series,
+                        matchPercentage: Int((tmdbItem.voteAverage ?? 0) * 10),
+                        year: tmdbItem.displayYear,
+                        description: tmdbItem.overview ?? "Nessuna trama disponibile",
+                        isWatched: false,
+                        seasons: []
+                    )
+                }
+                
+                // --- PARTE MANCANTE AGGIUNTA QUI SOTTO ---
+                
+                // Applichiamo i flag "Visto" e "In Lista" PRIMA di mostrare la UI
+                for i in 0..<initialItems.count {
+                    guard let tmdbId = initialItems[i].tmdbId else { continue }
+                    
+                    // 1. SINCRONIZZAZIONE LISTA PERSONALE
+                    // Creiamo la chiave come salvata nel database (es. "movie_550" o "tv_123")
+                    // Nota: Usiamo "tv" se è series, per compatibilità con Supabase
+                    let typeString = (initialItems[i].type == .movie) ? "movie" : "tv"
+                    let listKey = "\(typeString)_\(tmdbId)"
+                    
+                    // Se la chiave è nel Set scaricato da Supabase, accendiamo il flag
+                    if personalListSet.contains(listKey) {
+                        initialItems[i].inMyList = true
+                    }
+                    
+                    // 2. SINCRONIZZAZIONE VISTI (Solo Film per ora)
+                    if initialItems[i].type == .movie {
+                        let watchedKey = generateKey(id: tmdbId, season: nil, episode: nil)
+                        if watchedSet.contains(watchedKey) {
+                            initialItems[i].isWatched = true
                         }
-                        return nil
                     }
                 }
                 
-                // Man mano che i download finiscono, aggiorniamo la lista
-                for await enrichedItem in group {
-                    if let newItem = enrichedItem {
-                        await MainActor.run {
-                            if let index = self.items.firstIndex(where: { $0.id == newItem.id }) {
-                                self.items[index] = newItem
+                // ------------------------------------------
+                
+                // Mostriamo subito le locandine all'utente (UI veloce)
+                await MainActor.run {
+                    self.items = initialItems
+                    self.heroMovie = initialItems.first
+                }
+                
+                // B. SCARICAMENTO EPISODI (Background Parallelo)
+                await withTaskGroup(of: MediaItem?.self) { group in
+                    for item in initialItems {
+                        group.addTask {
+                            if item.type == .series {
+                                return await self.fetchFullSeriesData(for: item)
+                            } else if item.type == .movie {
+                                return await self.fetchMovieData(for: item)
                             }
-                            // Aggiorniamo anche l'hero se necessario
-                            if self.heroMovie?.id == newItem.id {
-                                self.heroMovie = newItem
+                            return nil
+                        }
+                    }
+                    
+                    // Man mano che i download finiscono, aggiorniamo la lista
+                    for await enrichedItem in group {
+                        if var newItem = enrichedItem {
+                            await MainActor.run {
+                                if let index = self.items.firstIndex(where: { $0.id == newItem.id }) {
+                                    
+                                    // IMPORTANTE: Manteniamo lo stato "inMyList" che abbiamo settato prima!
+                                    // Altrimenti quando arrivano i dettagli, la spunta sparirebbe.
+                                    newItem.inMyList = self.items[index].inMyList
+                                    newItem.isWatched = self.items[index].isWatched
+                                    
+                                    self.items[index] = newItem
+                                }
+                                
+                                if self.heroMovie?.id == newItem.id {
+                                    // Manteniamo lo stato anche per l'hero
+                                    var heroUpdate = newItem
+                                    heroUpdate.inMyList = self.heroMovie?.inMyList ?? false
+                                    self.heroMovie = heroUpdate
+                                }
                             }
                         }
                     }
                 }
-            }
-            
-        } catch { print("Errore caricamento massivo: \(error)") }
-    }
+                
+                // C. RECUPERO GHOST ITEMS (Film in lista ma non in tendenza)
+                await fetchMissingPersonalListItems()
+                
+            } catch { print("Errore caricamento massivo: \(error)") }
+        }
     
     // Funzione Helper: Scarica Episodi e applica i visti
     private func fetchFullSeriesData(for item: MediaItem) async -> MediaItem? {
@@ -312,6 +432,28 @@ class LibraryViewModel {
         }
     }
     
+    func toggleInMyList(itemId: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == itemId }), let tmdbId = items[index].tmdbId else { return }
+        
+        items[index].inMyList.toggle()
+        if heroMovie?.id == itemId { heroMovie?.inMyList = items[index].inMyList }
+        let nowInList = items[index].inMyList
+        
+        Task {
+            do {
+                if nowInList {
+                    let log = PersonalList(tmdbId: tmdbId, mediaType: items[index].type.rawValue)
+                    try await SupabaseManager.shared.client.from("PersonalList").insert(log).execute()
+                    personalListSet.insert("content_\(tmdbId)")
+                } else {
+                    try await SupabaseManager.shared.client.from("PersonalList").delete()
+                        .eq("tmdb_id", value: tmdbId).eq("media_type", value: items[index].type.rawValue).execute()
+                    personalListSet.remove("\(items[index].type.rawValue)_\(tmdbId)")
+                }
+            } catch { print("Errore aggiunta alla lista: \(error)") }
+        }
+    }
+    
     func toggleEpisodeWatched(itemId: UUID, seasonId: UUID, episodeId: UUID) {
         guard let itemIndex = items.firstIndex(where: { $0.id == itemId }),
               let seasonIndex = items[itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
@@ -387,7 +529,7 @@ class LibraryViewModel {
             print("Errore caricamento episodi: \(error)")
         }
         
-        return updatedItem // <--- IMPORTANTE: Restituisce l'item aggiornato
+        return updatedItem
     }
     
     // 2. Modifica anche questa
@@ -422,6 +564,7 @@ class LibraryViewModel {
 
 struct ContentView: View {
     @State private var viewModel = LibraryViewModel()
+    @AppStorage("isDarkMode") private var isDarkMode = true
 
     var body: some View {
         TabView {
@@ -431,17 +574,19 @@ struct ContentView: View {
             SearchView(libraryViewModel: viewModel)
                 .tabItem { Label("Cerca", systemImage: "magnifyingglass") }
         }
-        .accentColor(.white)
+        .accentColor(isDarkMode ? .white : .blue)
+        .preferredColorScheme(isDarkMode ? .dark : .light)
     }
 }
 
 struct HomeView: View {
     var viewModel: LibraryViewModel
+    @State private var showProfile = false
     
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color(UIColor.systemBackground).ignoresSafeArea()
                 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -453,7 +598,8 @@ struct HomeView: View {
                         }
                         
                         CategoryRow(title: "Di tendenza ora", items: viewModel.trendingMedia, viewModel: viewModel)
-                        CategoryRow(title: "La tua lista", items: viewModel.myList, viewModel: viewModel) .animation(.default, value: viewModel.myList)
+                        CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel) .animation(.default, value: viewModel.keepWatching)
+                        CategoryRow(title: "La tua lista", items: viewModel.personalList_, viewModel: viewModel) .animation(.default, value: viewModel.keepWatching)
                         
                         Spacer(minLength: 100)
                     }
@@ -462,10 +608,17 @@ struct HomeView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                     Image(systemName: "person.crop.circle")
-                        .font(.title2)
-                        .foregroundColor(.white)
+                    Button(action: {
+                        showProfile = true
+                    }) {
+                        Image(systemName: "person.crop.circle")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                    }
                 }
+            }
+            .sheet(isPresented: $showProfile) {
+                ProfileView(libraryViewModel: viewModel)
             }
         }
     }
@@ -514,7 +667,7 @@ struct HeroSection: View {
                 
                 Text(item.title)
                     .font(.system(size: 40, weight: .heavy))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .multilineTextAlignment(.center)
                     .shadow(color: .black, radius: 10)
                     .padding(.horizontal)
@@ -554,7 +707,7 @@ struct CategoryRow: View {
     
     var body: some View {
         VStack(alignment: .leading) {
-            Text(title).font(.headline).bold().foregroundStyle(.white).padding(.horizontal)
+            Text(title).font(.headline).bold().foregroundStyle(.primary).padding(.horizontal)
             
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -727,7 +880,7 @@ struct MediaCard: View {
                     Text(liveItem.title)
                         .font(.largeTitle)
                         .bold()
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .shadow(color: .black, radius: 10)
                     
                     // Metadati (Match, Anno, Durata)
@@ -742,32 +895,70 @@ struct MediaCard: View {
                         Text("HD").font(.caption).padding(2).border(Color.gray).foregroundStyle(.gray)
                     }.font(.subheadline)
                     
-                    // MARK: - PULSANTE CHECKBOX "VISTO"
+                    // MARK: - PULSANTE CHECKBOX "VISTO" + AGGIUNGI ALLA LISTA
                     if liveItem.type == .movie {
+                        HStack(spacing: 12){
+                            // bottone per aggiunta alla lista
+                            Button(action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    viewModel.toggleInMyList(itemId: liveItem.id)
+                                }
+                            }) {
+                                Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
+                                    .font(.title3)
+                                    .fontWeight(.semibold)
+                                    .frame(width: 25, height: 25)
+                                    .padding()
+                                    .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
+                                    .clipShape(Circle())
+                                    
+                            }
+                            .padding(.vertical, 5)
+                            
+                            // bottone per segnare come visto
+                            Button(action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    viewModel.toggleItemWatched(itemId: liveItem.id)
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle")
+                                        .font(.title3)
+                                    
+                                    Text(liveItem.isWatched ? "Già visto" : "Segna come visto")
+                                        .fontWeight(.bold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(liveItem.isWatched ? Color.green : Color.white)
+                                .foregroundColor(liveItem.isWatched ? .white : .black)
+                                .cornerRadius(8)
+                            }
+                            .padding(.vertical, 5)
+                        }
+                    }
+                    else{
+                        // bottone per aggiunta alla lista
                         Button(action: {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                viewModel.toggleItemWatched(itemId: liveItem.id)
+                                viewModel.toggleInMyList(itemId: liveItem.id)
                             }
                         }) {
-                            HStack {
-                                Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle")
-                                    .font(.title3)
+                            Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
+                                .font(.title3)
+                                .fontWeight(.semibold)
+                                .frame(width: 25, height: 25)
+                                .padding()
+                                .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
+                                .clipShape(Circle())
                                 
-                                Text(liveItem.isWatched ? "Già visto" : "Segna come visto")
-                                    .fontWeight(.bold)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(liveItem.isWatched ? Color.green : Color.white)
-                            .foregroundColor(liveItem.isWatched ? .white : .black)
-                            .cornerRadius(8)
                         }
                         .padding(.vertical, 5)
                     }
                     
                     // Descrizione Trama
                     Text(liveItem.description)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .lineSpacing(4)
                         .padding(.top, 5)
                     
@@ -829,7 +1020,7 @@ struct MediaCard: View {
                                     // Testo Episodio
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("\(episode.number). \(episode.title)")
-                                            .font(.subheadline).bold().foregroundStyle(.white).lineLimit(1)
+                                            .font(.subheadline).bold().foregroundStyle(.primary).lineLimit(1)
                                         Text(episode.plot)
                                             .font(.caption).foregroundStyle(.gray).lineLimit(2).multilineTextAlignment(.leading)
                                     }
@@ -913,6 +1104,159 @@ struct MediaCard: View {
                 }
             }
         }
+    }
+}
+
+
+// MARK: PROFILE VIEW
+struct ProfileView: View {
+    // ViewModel dedicato
+    @State private var vm: ProfileViewModel
+    @Environment(\.dismiss) var dismiss
+    
+    // Inizializzatore personalizzato
+    init(libraryViewModel: LibraryViewModel) {
+        _vm = State(initialValue: ProfileViewModel(libraryViewModel: libraryViewModel))
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                
+                ScrollView {
+                    VStack(spacing: 30) {
+                        
+                        // MARK: - HEADER UTENTE
+                        VStack(spacing: 15) {
+                            // Avatar
+                            ZStack {
+                                Circle()
+                                    .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .frame(width: 100, height: 100)
+                                
+                                Text(String(vm.userEmail.prefix(1)).uppercased())
+                                    .font(.system(size: 40, weight: .bold))
+                                    .foregroundStyle(.primary)
+                            }
+                            .shadow(color: .blue.opacity(0.5), radius: 10)
+                            
+                            // Email
+                            Text(vm.userEmail)
+                                .font(.title3)
+                                .bold()
+                                .foregroundStyle(.primary)
+                            
+                            Text("Membro Standard")
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.3))
+                                .cornerRadius(5)
+                                .foregroundStyle(.gray)
+                        }
+                        .padding(.top, 40)
+                        
+                        Divider().background(Color.gray.opacity(0.5))
+                        
+                        // MARK: - STATISTICHE
+                        HStack(spacing: 40) {
+                            StatBox(number: vm.watchedMoviesCount, label: "Film Visti")
+                            StatBox(number: vm.watchedEpisodesCount, label: "Episodi")
+                        }
+                        .padding(.vertical)
+                        
+                        // MARK: - IMPOSTAZIONI / LOGOUT
+                        VStack(spacing: 0) {
+                            NavigationLink(destination: SettingsView()) {
+                                SettingsRow(icon: "gear", title: "Impostazioni App")
+                            }
+                            Divider().background(Color.gray.opacity(0.2))
+                            SettingsRow(icon: "info.circle", title: "Versione App", value: vm.appVersion)
+                            
+                            Color.clear.frame(height: 40)
+                            
+                            // Tasto Logout
+                            Button(action: {
+                                Task {
+                                    let success = await vm.performLogout()
+                                    if success {
+                                        dismiss()
+                                        // Qui puoi gestire il reset della root view se necessario
+                                    }
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    Text("Esci dall'account")
+                                }
+                                .bold()
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.red.opacity(0.9))
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
+                            }
+                        }
+                        .padding(.horizontal)
+                        
+                    }
+                    .padding(.bottom, 50)
+                }
+            }
+            .navigationTitle("Profilo")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Chiudi") { dismiss() }
+                        .foregroundStyle(.primary)
+                }
+            }
+            .task {
+                await vm.fetchUser()
+            }
+        }
+    }
+}
+
+// Helper Components per il Profilo
+struct StatBox: View {
+    let number: Int
+    let label: String
+    
+    var body: some View {
+        VStack {
+            Text("\(number)")
+                .font(.title).bold()
+                .foregroundStyle(.primary)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.gray)
+        }
+    }
+}
+
+struct SettingsRow: View {
+    let icon: String
+    let title: String
+    var value: String? = nil
+    
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundStyle(.gray)
+                .frame(width: 30)
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer()
+            if let v = value {
+                Text(v).foregroundStyle(.gray).font(.caption)
+            } else {
+                Image(systemName: "chevron.right").foregroundStyle(.gray)
+            }
+        }
+        .padding()
+        .background(Color.gray.opacity(0.1))
     }
 }
 #Preview {
