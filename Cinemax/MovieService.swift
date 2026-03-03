@@ -12,7 +12,7 @@ class MovieService {
     private let apiKey = "bfc8c4fd035c0264266b8e38b209fba8"
     
     // Funzione generica per scaricare film o serie
-    func fetchTrending() async throws -> [TMDBMovie] {
+    func fetchTrending() async throws -> [TMDBItem] {
         // URL per i trend settimanali (film e serie misti) in italiano
         let urlString = "https://api.themoviedb.org/3/trending/all/week?api_key=\(apiKey)&language=it-IT"
         
@@ -25,7 +25,7 @@ class MovieService {
     }
     
     // Funzione per cercare (bonus)
-    func search(query: String) async throws -> [TMDBMovie] {
+    func search(query: String) async throws -> [TMDBItem] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         let urlString = "https://api.themoviedb.org/3/search/multi?api_key=\(apiKey)&language=it-IT&query=\(encodedQuery)"
         
@@ -36,11 +36,11 @@ class MovieService {
         return response.results
     }
     // Ottieni i dettagli della serie (per sapere le stagioni)
-    func fetchShowDetails(id: Int) async throws -> TMDBShowDetails {
+    func fetchShowDetails(id: Int) async throws -> TMDBItem {
         let urlString = "https://api.themoviedb.org/3/tv/\(id)?api_key=\(apiKey)&language=it-IT"
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         let (data, _) = try await URLSession.shared.data(from: url)
-        return try JSONDecoder().decode(TMDBShowDetails.self, from: data)
+        return try JSONDecoder().decode(TMDBItem.self, from: data)
     }
     
     // Ottieni gli episodi di una specifica stagione
@@ -48,18 +48,18 @@ class MovieService {
         let urlString = "https://api.themoviedb.org/3/tv/\(showId)/season/\(seasonNumber)?api_key=\(apiKey)&language=it-IT"
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         let (data, _) = try await URLSession.shared.data(from: url)
-        return try JSONDecoder().decode(TMDBSeasonDetails.self, from: data).episodes
+        return try JSONDecoder().decode(TMDBItem.self, from: data).episodes!
     }
 
     // Recupera i dettagli del singolo film (durata)
-    func fetchMovieDetails(id: Int) async throws -> TMDBMovieDetails {
+    func fetchMovieDetails(id: Int) async throws -> TMDBItem {
         let urlString = "https://api.themoviedb.org/3/movie/\(id)?api_key=\(apiKey)&language=it-IT"
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
         let (data, _) = try await URLSession.shared.data(from: url)
-        return try JSONDecoder().decode(TMDBMovieDetails.self, from: data)
+        return try JSONDecoder().decode(TMDBItem.self, from: data)
     }
 
-    func searchMedia(query: String) async throws -> [TMDBMovie] {
+    func searchMedia(query: String) async throws -> [TMDBItem] {
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             throw URLError(.badURL)
         }
@@ -77,7 +77,7 @@ class MovieService {
         return decodedResponse.results.filter { $0.mediaType != "person" }
     }
     
-    func fetchMediaDetails(id: Int, type: String) async throws -> TMDBMovie {
+    func fetchMediaDetails(id: Int, type: String) async throws -> TMDBItem {
         let endpoint = (type == "movie") ? "movie" : "tv"
         
         let urlString = "https://api.themoviedb.org/3/\(endpoint)/\(id)?api_key=\(apiKey)&language=it-IT"
@@ -86,6 +86,6 @@ class MovieService {
         
         let (data, _) = try await URLSession.shared.data(from: url)
         
-        return try JSONDecoder().decode(TMDBMovie.self, from: data)
+        return try JSONDecoder().decode(TMDBItem.self, from: data)
     }
 }

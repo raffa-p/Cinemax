@@ -9,11 +9,11 @@ import Foundation
 
 // Risposta generica per le liste (es. Trending, Search)
 struct TMDBResponse: Codable {
-    let results: [TMDBMovie]
+    let results: [TMDBItem]
 }
 
 // Il singolo film/serie come arriva dall'API
-struct TMDBMovie: Codable, Identifiable {
+struct TMDBItem: Codable, Identifiable {
     let id: Int
     let title: String?        // I film hanno 'title'
     let name: String?         // Le serie hanno 'name'
@@ -25,7 +25,14 @@ struct TMDBMovie: Codable, Identifiable {
     let firstAirDate: String? // Serie
     let mediaType: String?
     
-    // Mappatura dei nomi JSON ai nomi Swift (CamelCase)
+    // MARK: SERIE
+    let seasons: [TMDBSeasonMetadata]?
+    let episodes: [TMDBEpisode]?
+    
+    // MARK: MOVIE
+    let runtime: Int? // Durata in minuti
+    
+    // Mappatura dei nomi JSON ai nomi Swift
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview
         case posterPath = "poster_path"
@@ -34,18 +41,16 @@ struct TMDBMovie: Codable, Identifiable {
         case releaseDate = "release_date"
         case firstAirDate = "first_air_date"
         case mediaType = "media_type"
+        case seasons
+        case episodes
+        case runtime
     }
     
-    // Helper per ottenere il titolo corretto (Film o Serie)
     var displayTitle: String { title ?? name ?? "Sconosciuto" }
-    
-    // Helper per l'anno
     var displayYear: String {
         let date = releaseDate ?? firstAirDate ?? ""
-        return String(date.prefix(4)) // Prende solo i primi 4 caratteri (es. "2023")
+        return String(date.prefix(4))
     }
-    
-
     var fullPosterURL: URL? {
         guard let path = posterPath, !path.isEmpty else { return nil }
         
@@ -56,22 +61,12 @@ struct TMDBMovie: Codable, Identifiable {
     }
 }
 
-// Dettagli completi di una Serie (per sapere quante stagioni ha)
-struct TMDBShowDetails: Codable {
-    let seasons: [TMDBSeasonMetadata]
-}
-
 struct TMDBSeasonMetadata: Codable {
     let seasonNumber: Int
     
     enum CodingKeys: String, CodingKey {
         case seasonNumber = "season_number"
     }
-}
-
-// Dettagli di una singola stagione (che contiene gli episodi)
-struct TMDBSeasonDetails: Codable {
-    let episodes: [TMDBEpisode]
 }
 
 struct TMDBEpisode: Codable, Identifiable {
@@ -81,24 +76,12 @@ struct TMDBEpisode: Codable, Identifiable {
     let overview: String
     let runtime: Int?
     let stillPath: String?
+    let showId: Int?
     
     enum CodingKeys: String, CodingKey {
         case id, name, overview, runtime
         case episodeNumber = "episode_number"
         case stillPath = "still_path"
-    }
-}
-
-struct TMDBMovieDetails: Codable {
-    let runtime: Int? // Durata in minuti
-}
-
-struct PersonalListEntry: Codable {
-    let tmdbId: Int
-    let mediaType: String
-    
-    enum CodingKeys: String, CodingKey {
-        case tmdbId = "tmdb_id"
-        case mediaType = "media_type"
+        case showId = "show_id"
     }
 }

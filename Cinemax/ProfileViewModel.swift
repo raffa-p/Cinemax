@@ -25,7 +25,7 @@ class ProfileViewModel {
     // MARK: - Computed Properties (Statistiche)
     
     var watchedMoviesCount: Int {
-        libraryViewModel.items.filter { $0.type == .movie && $0.isWatched }.count
+        libraryViewModel.wa.filter { $0.type == .movie && $0.isWatched }.count
     }
     
     var watchedEpisodesCount: Int {
