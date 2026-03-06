@@ -14,317 +14,460 @@ import Supabase
 @Observable
 class LibraryViewModel {
     let apiSupabase = SupabaseInterface()
-    var viewTrendings: [MediaItem]?
+    var viewTrendings: [MediaItem] = []
     var heroMovie: MediaItem?
-    var generalCacheContents: [MediaItem]?
+    var generalCacheContents: [MediaItem] = []
     
-    
-    // lista "Continua a guardare"
     var keepWatching: [MediaItem] = []
-    
-    // lista "La tua lista"
     var personalList: [MediaItem] = []
-    
-    // lista "visti"
     var watchedItems: [MediaItem] = []
     
+    // Set per le ricerche rapide in memoria
+    var watchedSet: Set<String> = []
+    var personalListSet: Set<String> = []
     
     init() {
-            Task {
-                await viewWatchingMethod()
-                await viewPersonalList()
-                await viewTrendingsMethod()
-            }
+        Task {
+            await loadUserHistory()
+            await viewWatchingMethod()
+            await viewPersonalList()
+            await viewTrendingsMethod()
+            await syncAllData()
         }
+    }
     
-    // MARK: DOWNLOADS
     func viewPersonalList() async {
         do {
             let temp = try await apiSupabase.loadPersonalList()
-            generalCacheContents?.append(contentsOf: temp)
-            
             await MainActor.run {
+                self.generalCacheContents.append(contentsOf: temp)
                 self.personalList = temp
             }
-        } catch {
-            print("Errore recupero personal list: \(error.localizedDescription)")
-        }
+        } catch { print("Errore recupero personal list: \(error)") }
     }
     
     func viewWatchingMethod() async {
         do {
+            // 1. Scarica la lista di base da Supabase
             let temp = try await apiSupabase.loadWatching()
-            generalCacheContents?.append(contentsOf: temp)
-
+            var enrichedTemp: [MediaItem] = []
+            
+            // 2. Arricchiamo e FILTRIAMO ogni elemento
+            for item in temp {
+                if item.type == .series {
+                    let enriched = await loadEpisodes(for: item)
+                    
+                    // CALCOLO DELLO STATO REALE DELLA SERIE
+                    let isFullyWatched = enriched.totalEpisodes > 0 && enriched.watchedEpisodes == enriched.totalEpisodes
+                    let hasZeroWatched = enriched.watchedEpisodes == 0
+                    
+                    if isFullyWatched || hasZeroWatched {
+                        // 🛑 ZOMBIE DATA TROVATO: La serie è finita (o azzerata),
+                        // ma Supabase la teneva ancora in ostaggio in "keepWatching".
+                        
+                        if let tmdbId = enriched.tmdbId {
+                            // A. Puliamo il Database in background per tenerlo ordinato
+                            Task {
+                                do {
+                                    try await SupabaseManager.shared.client.from("keepWatching")
+                                        .delete().eq("tmdb_id", value: tmdbId).execute()
+                                    print("🧹 Pulizia zombie eseguita per ID: \(tmdbId)")
+                                } catch {
+                                    print("❌ Errore pulizia zombie: \(error)")
+                                }
+                                
+                                // Se è finita, ci assicuriamo che sia tra i "Visti" definitivi
+                                if isFullyWatched {
+                                    let seriesLog = watchedItem(tmdb_id: tmdbId, media_type: "Serie TV", season_number: nil, episode_number: nil)
+                                    try? await SupabaseManager.shared.client.from("watched_items").insert(seriesLog).execute()
+                                }
+                            }
+                        }
+                        // B. NON la aggiungiamo a `enrichedTemp`, così scompare dalla UI!
+                        
+                    } else {
+                        // ✅ Tutto regolare, la serie è in corso!
+                        enrichedTemp.append(enriched)
+                    }
+                } else {
+                    // I Film passano lisci (non avendo stagioni non si bloccano)
+                    let enriched = await loadMovieDuration(for: item)
+                    enrichedTemp.append(enriched)
+                }
+            }
+            
+            // 3. Mostriamo la lista pulita e filtrata sulla Home Page
             await MainActor.run {
-                self.keepWatching = temp
+                self.generalCacheContents.append(contentsOf: enrichedTemp)
+                self.keepWatching = enrichedTemp
             }
         } catch {
-            print("Errore recupero continuna a guardare: \(error.localizedDescription)")
+            print("Errore recupero continua a guardare: \(error)")
         }
     }
     
     func viewTrendingsMethod() async {
         do {
             let temp = try await apiSupabase.loadTrendings()
-            generalCacheContents?.append(contentsOf: temp)
-
             await MainActor.run {
+                self.generalCacheContents.append(contentsOf: temp)
                 self.viewTrendings = temp
                 self.heroMovie = temp.first
             }
-        } catch {
-            print("Errore recupero trendings: \(error.localizedDescription)")
-        }
+        } catch { print("Errore recupero trendings: \(error)") }
     }
 
-    
-    // MARK: - GESTIONE SUPABASE
+    func loadUserHistory() async {
+        do {
+            let history: [watchedItem] = try await SupabaseManager.shared.client
+                .from("watched_items")
+                .select()
+                .execute()
+                .value
+            
+            var newWatchedSet = Set<String>()
+            
+            for log in history {
+                if let tmdbId = log.tmdb_id {
+                    let key = generateKey(id: tmdbId, season: log.season_number, episode: log.episode_number)
+                    newWatchedSet.insert(key)
+                }
+            }
+            
+            await MainActor.run {
+                self.watchedSet = newWatchedSet
+            }
+            print("✅ Storico caricato: \(newWatchedSet.count) elementi visti trovati.")
+            
+        } catch {
+            print("Errore caricamento storico visti: \(error)")
+        }
+    }
     
     private func generateKey(id: Int, season: Int?, episode: Int?) -> String {
         if let s = season, let e = episode { return "episode_\(id)_S\(s)_E\(e)" }
         return "movie_\(id)"
     }
     
-    // MARK: - AZIONI UTENTE (Toggle)
-    
     func toggleItemWatched(itemId: UUID) {
-        guard let index = generalCacheContents!.firstIndex(where: { $0.id == itemId }), let tmdbId = generalCacheContents![index].tmdbId else { return }
+        guard let index = generalCacheContents.firstIndex(where: { $0.id == itemId }),
+              let tmdbId = generalCacheContents[index].tmdbId else { return }
         
-        generalCacheContents![index].isWatched.toggle()
-        if heroMovie?.id == itemId { heroMovie?.isWatched = generalCacheContents![index].isWatched }
-        let isNowWatched = generalCacheContents![index].isWatched
+        generalCacheContents[index].isWatched.toggle()
+        if heroMovie?.id == itemId { heroMovie?.isWatched = generalCacheContents[index].isWatched }
+        let isNowWatched = generalCacheContents[index].isWatched
+        let key = generateKey(id: tmdbId, season: nil, episode: nil)
         
         Task {
             do {
                 if isNowWatched {
-                    let log = watchedItem(tmdb_id: tmdbId, mediaType: "movie", seasonNumber: nil, episodeNumber: nil)
+                    let log = watchedItem(tmdb_id: tmdbId, media_type: "movie", season_number: nil, episode_number: nil)
                     try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
-                    watchedItem.insert(generateKey(id: tmdbId, season: nil, episode: nil))
+                    watchedSet.insert(key)
                 } else {
                     try await SupabaseManager.shared.client.from("watched_items").delete()
                         .eq("tmdb_id", value: tmdbId).eq("media_type", value: "movie").execute()
-                    watchedItem.remove(generateKey(id: tmdbId, season: nil, episode: nil))
+                    watchedSet.remove(key)
                 }
             } catch { print("Errore aggiornamento flag visto: \(error)") }
         }
     }
     
-    // add item to personal list
     func toggleInMyList(itemId: UUID) {
-        guard let index = generalCacheContents!.firstIndex(where: { $0.id == itemId }), let tmdbId = generalCacheContents![index].tmdbId else { return }
-        
-        generalCacheContents![index].inMyList.toggle()
-        if heroMovie?.id == itemId { heroMovie?.inMyList = generalCacheContents![index].inMyList }
-        let nowInList = generalCacheContents![index].inMyList
-        
-        Task {
-            do {
-                if nowInList {
-                    let log = personalListItem(tmdb_id: tmdbId, mediaType: generalCacheContents[index].type.rawValue)
-                    try await SupabaseManager.shared.client
-                        .from("PersonalList")
-                        .insert(log)
-                        .execute()
-                    viewPersonalList().insert("content_\(tmdbId)")
-                } else {
-                    try await SupabaseManager.shared.client
-                        .from("PersonalList")
-                        .delete()
-                        .eq("tmdb_id", value: tmdbId)
-                        .eq("media_type", value: generalCacheContents[index].type.rawValue)
-                        .execute()
-                    viewPersonalList().remove("\(generalCacheContents[index].type.rawValue)_\(tmdbId)")
+            // 1. Troviamo l'ID universale (tmdbId) per non confondere le copie
+            guard let originalItem = generalCacheContents.first(where: { $0.id == itemId }),
+                  let tmdbId = originalItem.tmdbId else { return }
+            
+            let newState = !originalItem.inMyList
+            let mediaTypeStr = originalItem.type.rawValue
+            
+            // 2. SINCRONIZZAZIONE UNIVERSALE: Aggiorniamo TUTTE le copie in TUTTI gli array!
+            for i in generalCacheContents.indices where generalCacheContents[i].tmdbId == tmdbId {
+                generalCacheContents[i].inMyList = newState
+            }
+            for i in viewTrendings.indices where viewTrendings[i].tmdbId == tmdbId {
+                viewTrendings[i].inMyList = newState
+            }
+            for i in keepWatching.indices where keepWatching[i].tmdbId == tmdbId {
+                keepWatching[i].inMyList = newState // La copia qui mantiene i suoi episodi intatti!
+            }
+            
+            // 3. Aggiorniamo la riga orizzontale "La tua lista"
+            if newState {
+                // Se lo aggiungiamo, peschiamo la copia più "ricca" (magari ha già le stagioni caricate)
+                if let bestCopy = keepWatching.first(where: { $0.tmdbId == tmdbId }) ?? generalCacheContents.first(where: { $0.tmdbId == tmdbId }) {
+                    personalList.insert(bestCopy, at: 0)
                 }
-            } catch { print("Errore aggiunta/rimozione in lista: \(error)") }
+            } else {
+                // Rimuoviamo in base al tmdbId per essere sicuri al 100%
+                personalList.removeAll(where: { $0.tmdbId == tmdbId })
+            }
+            
+            if heroMovie?.tmdbId == tmdbId { heroMovie?.inMyList = newState }
+            
+            // 4. Salva su Supabase (rimasto invariato)
+            Task {
+                do {
+                    if newState {
+                        let log = personalListItem(tmdb_id: tmdbId, media_type: mediaTypeStr)
+                        try await SupabaseManager.shared.client.from("PersonalList").insert(log).execute()
+                        personalListSet.insert("content_\(tmdbId)")
+                    } else {
+                        try await SupabaseManager.shared.client.from("PersonalList").delete()
+                            .eq("tmdb_id", value: tmdbId)
+                            .eq("media_type", value: mediaTypeStr).execute()
+                        personalListSet.remove("\(mediaTypeStr)_\(tmdbId)")
+                    }
+                } catch { print("Errore aggiunta in lista: \(error)") }
+            }
         }
-    }
     
     func toggleEpisodeWatched(itemId: UUID, seasonId: UUID, episodeId: UUID) {
-        // 1. Troviamo gli indici nella cache principale
-        guard let itemIndex = generalCacheContents?.firstIndex(where: { $0.id == itemId }),
-              let seasonIndex = generalCacheContents![itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
-              let episodeIndex = generalCacheContents![itemIndex].seasons[seasonIndex].episodes.firstIndex(where: { $0.id == episodeId }),
-              let tmdbSeriesId = generalCacheContents![itemIndex].tmdbId else { return }
-        
-        let seasonNum = generalCacheContents![itemIndex].seasons[seasonIndex].number
-        let episodeNum = generalCacheContents![itemIndex].seasons[seasonIndex].episodes[episodeIndex].number
-        
-        // 2. Toggle UI nella cache principale
-        generalCacheContents![itemIndex].seasons[seasonIndex].episodes[episodeIndex].isWatched.toggle()
-        let isNowWatched = generalCacheContents![itemIndex].seasons[seasonIndex].episodes[episodeIndex].isWatched
-        let key = generateKey(id: tmdbSeriesId, season: seasonNum, episode: episodeNum)
-        
-        // 3. Estraiamo l'intero MediaItem già aggiornato
-        // (Questo oggetto ha già l'episodio con isWatched corretto!)
-        let updatedMediaItem = generalCacheContents![itemIndex]
-        
-        // 4. AGGIORNAMENTO LOGICA KEEP WATCHING
-        if let localIndex = keepWatching.firstIndex(where: { $0.id == itemId }) {
-            // CASO A: È già in keepWatching.
-            // Sostituiamo il vecchio elemento con quello nuovo aggiornato.
-            keepWatching[localIndex] = updatedMediaItem
+            // 1. Troviamo le info base dalla cache generale
+            guard let itemIndex = generalCacheContents.firstIndex(where: { $0.id == itemId }),
+                  let seasonIndex = generalCacheContents[itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
+                  let episodeIndex = generalCacheContents[itemIndex].seasons[seasonIndex].episodes.firstIndex(where: { $0.id == episodeId }),
+                  let tmdbSeriesId = generalCacheContents[itemIndex].tmdbId else { return }
             
-            // Opzionale ma consigliato: se toglie la spunta e gli episodi visti tornano a 0,
-            // lo rimuoviamo da Continua a Guardare?
-            if !isNowWatched && updatedMediaItem.watchedEpisodes == 0 {
-                keepWatching.remove(at: localIndex)
+            let seasonNum = generalCacheContents[itemIndex].seasons[seasonIndex].number
+            let episodeNum = generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].number
+            
+            // 2. Calcoliamo il nuovo stato (visto / non visto)
+            let isNowWatched = !generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].isWatched
+            let key = generateKey(id: tmdbSeriesId, season: seasonNum, episode: episodeNum)
+            
+            // 3. AGGIORNAMENTO STORICO IN MEMORIA (Fondamentale per i futuri download!)
+            if isNowWatched {
+                watchedSet.insert(key)
+            } else {
+                watchedSet.remove(key)
             }
             
-        } else {
-            // CASO B: Non c'è in keepWatching.
-            // Se lo ha appena segnato come visto, aggiungiamo l'intera serie (aggiornata).
-            if isNowWatched {
-                // Lo mettiamo all'inizio della lista (indice 0) perché è il più recente!
-                keepWatching.insert(updatedMediaItem, at: 0)
+            // 4. SINCRONIZZAZIONE UNIVERSALE: Aggiorniamo la spunta su TUTTE le copie della serie!
+            
+            // Helper interno per non ripetere il codice
+            func updateEpisodes(in array: inout [MediaItem]) {
+                for i in array.indices where array[i].tmdbId == tmdbSeriesId {
+                    if let sIdx = array[i].seasons.firstIndex(where: { $0.number == seasonNum }),
+                       let eIdx = array[i].seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
+                        array[i].seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
+                    }
+                }
+            }
+            
+            updateEpisodes(in: &generalCacheContents)
+            updateEpisodes(in: &keepWatching)
+            updateEpisodes(in: &personalList)
+            updateEpisodes(in: &viewTrendings)
+            
+            // Aggiorniamo l'Hero Movie se necessario
+            if heroMovie?.tmdbId == tmdbSeriesId {
+                if let sIdx = heroMovie?.seasons.firstIndex(where: { $0.number == seasonNum }),
+                   let eIdx = heroMovie?.seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
+                    heroMovie?.seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
+                }
+            }
+            
+            // 5. PRENDIAMO L'OGGETTO AGGIORNATO (per calcolare il progresso della serie)
+            guard let updatedItemIndex = generalCacheContents.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) else { return }
+            let updatedMediaItem = generalCacheContents[updatedItemIndex]
+            
+            let isFullyWatched = updatedMediaItem.watchedEpisodes == updatedMediaItem.totalEpisodes
+            let isInProgress = updatedMediaItem.watchedEpisodes > 0 && !isFullyWatched
+            
+            // 6. GESTIONE "CONTINUA A GUARDARE"
+            if isInProgress {
+                if let localIndex = keepWatching.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) {
+                    keepWatching[localIndex] = updatedMediaItem // Aggiorna barra progresso
+                } else {
+                    keepWatching.insert(updatedMediaItem, at: 0) // Aggiunge alla riga
+                }
+            } else {
+                // Rimuove la serie se è finita o se togli la spunta al primo episodio
+                keepWatching.removeAll(where: { $0.tmdbId == tmdbSeriesId })
+            }
+            
+            // 7. AGGIORNAMENTO DATABASE SUPABASE
+            Task {
+                do {
+                    if isNowWatched {
+                        let log = watchedItem(tmdb_id: tmdbSeriesId, media_type: "episode", season_number: seasonNum, episode_number: episodeNum)
+                        try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
+                    } else {
+                        try await SupabaseManager.shared.client.from("watched_items").delete()
+                            .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "episode")
+                            .eq("season_number", value: seasonNum).eq("episode_number", value: episodeNum).execute()
+                    }
+                    
+                    // Usiamo il nome esatto della colonna: tmdbId
+                    struct KeepWatchInsert: Codable { let tmdbId: Int }
+                    
+                    if isFullyWatched {
+                        // CANCELLAZIONE: Usiamo "tmdbId"
+                        do {
+                            try await SupabaseManager.shared.client.from("keepWatching").delete()
+                                .eq("tmdbId", value: tmdbSeriesId).execute()
+                            print("✅ Serie completata: cancellata da keepWatching!")
+                        } catch { print("❌ Errore delete keepWatching: \(error)") }
+                        
+                        let seriesLog = watchedItem(tmdb_id: tmdbSeriesId, media_type: "Serie TV", season_number: nil, episode_number: nil)
+                        try? await SupabaseManager.shared.client.from("watched_items").insert(seriesLog).execute()
+                        
+                    } else if isInProgress {
+                        try? await SupabaseManager.shared.client.from("keepWatching").delete()
+                            .eq("tmdbId", value: tmdbSeriesId).execute()
+                        
+                        // INSERIMENTO: Usiamo "tmdbId"
+                        let keepLog = KeepWatchInsert(tmdbId: tmdbSeriesId)
+                        try await SupabaseManager.shared.client.from("keepWatching").insert(keepLog).execute()
+                        
+                        try? await SupabaseManager.shared.client.from("watched_items").delete()
+                            .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "Serie TV").execute()
+                        
+                    } else {
+                        try? await SupabaseManager.shared.client.from("keepWatching").delete()
+                            .eq("tmdbId", value: tmdbSeriesId).execute()
+                        try? await SupabaseManager.shared.client.from("watched_items").delete()
+                            .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "Serie TV").execute()
+                    }
+                } catch { print("Errore salvataggio Supabase: \(error)") }
             }
         }
+    
+    // MARK: - DOWNLOAD DETTAGLI EPISODI E DURATA
         
-        // 5. Aggiornamento Database Supabase (in background)
-        Task {
+        @discardableResult
+        func loadEpisodes(for item: MediaItem) async -> MediaItem {
+            // Controlla se è una serie e se non abbiamo già scaricato le stagioni
+            guard item.type == .series, item.seasons.isEmpty, let tmdbId = item.tmdbId else { return item }
+            
+            var updatedItem = item
+            
             do {
-                if isNowWatched {
-                    let log = watchedItem(tmdb_id: tmdbSeriesId, media_type: "episode", season_number: seasonNum, episode_number: episodeNum)
-                    try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
-                } else {
-                    try await SupabaseManager.shared.client.from("watched_items").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "episode")
-                        .eq("season_number", value: seasonNum).eq("episode_number", value: episodeNum).execute()
+                // 1. Chiediamo a TMDB i dettagli della serie (per sapere quante stagioni ha)
+                let details = try await MovieService.shared.fetchShowDetails(id: tmdbId)
+                var newSeasons: [Season] = []
+                
+                // 2. Scarichiamo le prime 5 stagioni (evitando la stagione 0 che di solito sono gli "Speciali")
+                for seasonMeta in details.seasons?.prefix(5) ?? [] where seasonMeta.seasonNumber > 0 {
+                    let episodes = try await MovieService.shared.fetchSeasonEpisodes(showId: tmdbId, seasonNumber: seasonMeta.seasonNumber)
+                    
+                    let convertedEpisodes = episodes.map { ep in
+                        let key = generateKey(id: tmdbId, season: seasonMeta.seasonNumber, episode: ep.episodeNumber)
+                        return Episode(
+                            number: ep.episodeNumber,
+                            title: ep.name,
+                            duration: "\(ep.runtime ?? 30)m",
+                            plot: ep.overview.isEmpty ? "Nessuna trama." : ep.overview,
+                            imageURL: ep.stillPath != nil ? URL(string: "https://image.tmdb.org/t/p/w300\(ep.stillPath!)") : nil,
+                            isWatched: watchedSet.contains(key), // Mette la spunta se l'avevamo già visto!
+                            show_id: ep.showId
+                        )
+                    }
+                    newSeasons.append(Season(number: seasonMeta.seasonNumber, episodes: convertedEpisodes))
+                }
+                
+                updatedItem.seasons = newSeasons
+                
+                // 3. Aggiorniamo la cache generale
+                await MainActor.run {
+                    // Distribuiamo le stagioni scaricate a TUTTE le copie nell'app!
+                    for i in self.generalCacheContents.indices where self.generalCacheContents[i].tmdbId == tmdbId {
+                        self.generalCacheContents[i].seasons = newSeasons
+                    }
+                    for i in self.keepWatching.indices where self.keepWatching[i].tmdbId == tmdbId {
+                        self.keepWatching[i].seasons = newSeasons
+                    }
+                    for i in self.personalList.indices where self.personalList[i].tmdbId == tmdbId {
+                        self.personalList[i].seasons = newSeasons
+                    }
+                    for i in self.viewTrendings.indices where self.viewTrendings[i].tmdbId == tmdbId {
+                        self.viewTrendings[i].seasons = newSeasons
+                    }
                 }
             } catch {
-                print("Errore salvataggio episodio DB: \(error)")
+                print("Errore caricamento episodi: \(error)")
             }
+            
+            return updatedItem
         }
-    }
-    
-    /*
-    // 1. Modifica questa funzione per restituire MediaItem
-    @discardableResult
-    func loadEpisodes(for item: MediaItem) async -> MediaItem {
-        // Se abbiamo già le stagioni o manca l'ID, restituiamo l'item così com'è
-        guard item.type == .series, item.seasons.isEmpty, let tmdbId = item.tmdbId else { return item }
-        
-        var updatedItem = item
-        
-        do {
-            let details = try await MovieService.shared.fetchShowDetails(id: tmdbId)
-            var newSeasons: [Season] = []
+
+        @discardableResult
+        func loadMovieDuration(for item: MediaItem) async -> MediaItem {
+            guard item.type == .movie, item.duration == nil, let tmdbId = item.tmdbId else { return item }
             
-            // Scarichiamo le prime 5 stagioni
-            for seasonMeta in details.seasons.prefix(5) where seasonMeta.seasonNumber > 0 {
-                let episodes = try await MovieService.shared.fetchSeasonEpisodes(showId: tmdbId, seasonNumber: seasonMeta.seasonNumber)
-                
-                let convertedEpisodes = episodes.map { ep in
-                    let key = generateKey(id: tmdbId, season: seasonMeta.seasonNumber, episode: ep.episodeNumber)
-                    return Episode(
-                        number: ep.episodeNumber,
-                        title: ep.name,
-                        duration: "\(ep.runtime ?? 30)m",
-                        plot: ep.overview.isEmpty ? "Nessuna trama." : ep.overview,
-                        imageURL: ep.stillPath != nil ? URL(string: "https://image.tmdb.org/t/p/w300\(ep.stillPath!)") : nil,
-                        isWatched: watchedSet.contains(key),
-                        show_id: ep.showId
-                    )
-                }
-                newSeasons.append(Season(number: seasonMeta.seasonNumber, episodes: convertedEpisodes))
-            }
-            
-            updatedItem.seasons = newSeasons
-            
-            // Aggiorniamo ANCHE la lista Home se l'item esiste lì (per coerenza)
-            await MainActor.run {
-                if let index = items.firstIndex(where: { $0.id == item.id }) {
-                    items[index] = updatedItem
-                }
-            }
-            
-        } catch {
-            print("Errore caricamento episodi: \(error)")
-        }
-        
-        return updatedItem
-    }
-    
-    // 2. Modifica anche questa
-    @discardableResult
-    func loadMovieDuration(for item: MediaItem) async -> MediaItem {
-        guard item.type == .movie, item.duration == nil, let tmdbId = item.tmdbId else { return item }
-        
-        var updatedItem = item
-        
-        do {
-            let details = try await MovieService.shared.fetchMovieDetails(id: tmdbId)
-            
-            if let minutes = details.runtime, minutes > 0 {
-                let hours = minutes / 60
-                let mins = minutes % 60
-                updatedItem.duration = "\(hours)h \(mins)m"
-                
-                await MainActor.run {
-                    if let index = items.firstIndex(where: { $0.id == item.id }) {
-                        items[index] = updatedItem
-                    }
-                }
-            }
-        } catch {
-            print("Errore durata film: \(error)")
-        }
-        
-        return updatedItem // <--- IMPORTANTE
-    }
-    
-    /// Metodo generale per recuperare i dettagli da Supabase e convertirli in MediaItem
-    func fetchDetailedMediaFromDatabase(table: String) async throws -> [MediaItem] {
-        
-        // 1. Scarichiamo gli "scontrini" da Supabase
-        let entries: [PersonalListEntry] = try await SupabaseManager.shared.client
-            .from(table)
-            .select()
-            .execute()
-            .value
-        
-        guard !entries.isEmpty else { return [] }
-        
-        // 2. Scarichiamo i dettagli da TMDB in parallelo
-        let detailedItems = await withTaskGroup(of: MediaItem?.self) { group in
-            for entry in entries {
-                group.addTask {
-                    do {
-                        if entry.mediaType == "Film" {
-                            // A. Scarica il modello TMDB specifico per i film
-                            let movieDetails = try await MovieService.fetchMovieDetails(id: entry.tmdbId)
-                            
-                            // B. Convertilo nel tuo modello MediaItem per la UI
-                            // (Dovrai usare l'inizializzatore corretto che hai creato nella tua struct MediaItem)
-                            return MediaItem(movie: movieDetails)
-                            
-                        } else {
-                            // A. Scarica il modello TMDB specifico per le serie (presumo tu abbia una funzione simile)
-                            let tvDetails = try await self.movieService.fetchTVDetails(id: entry.tmdbId)
-                            
-                            // B. Convertilo nel tuo modello MediaItem per la UI
-                            return MediaItem(tvShow: tvDetails)
+            var updatedItem = item
+            do {
+                let details = try await MovieService.shared.fetchMovieDetails(id: tmdbId)
+                if let minutes = details.runtime, minutes > 0 {
+                    let hours = minutes / 60
+                    let mins = minutes % 60
+                    updatedItem.duration = "\(hours)h \(mins)m"
+                    
+                    await MainActor.run {
+                        if let index = generalCacheContents.firstIndex(where: { $0.id == item.id }) {
+                            generalCacheContents[index] = updatedItem
                         }
-                    } catch {
-                        print("Errore fetch TMDB per ID \(entry.tmdbId): \(error)")
-                        return nil // Ignora questo elemento e prosegue con gli altri
+                    }
+                }
+            } catch { print("Errore durata film: \(error)") }
+            
+            return updatedItem
+        }
+    
+    // MARK: - Sincronizzazione Universale
+    func syncAllData() async {
+        await MainActor.run {
+            // 1. Creiamo un Set veloce degli ID presenti nella lista personale
+            let personalIds = Set(self.personalList.compactMap { $0.tmdbId })
+            
+            // 2. Sincronizziamo i Trendings
+            for i in self.viewTrendings.indices {
+                if let id = self.viewTrendings[i].tmdbId {
+                    // Allinea la spunta verde per la lista
+                    self.viewTrendings[i].inMyList = personalIds.contains(id)
+                    
+                    // Allinea il "Già visto" se è un Film
+                    if self.viewTrendings[i].type == .movie {
+                        let key = generateKey(id: id, season: nil, episode: nil)
+                        self.viewTrendings[i].isWatched = self.watchedSet.contains(key)
                     }
                 }
             }
             
-            // 3. Raccogliamo tutti i risultati che non sono falliti
-            var results: [MediaItem] = []
-            for await item in group {
-                if let item = item {
-                    results.append(item)
+            // 3. Sincronizziamo Continua a Guardare
+            for i in self.keepWatching.indices {
+                if let id = self.keepWatching[i].tmdbId {
+                    self.keepWatching[i].inMyList = personalIds.contains(id)
                 }
             }
-            return results
+            
+            // 4. Sincronizziamo la Cache Generale (che alimenta le schede di dettaglio)
+            for i in self.generalCacheContents.indices {
+                if let id = self.generalCacheContents[i].tmdbId {
+                    self.generalCacheContents[i].inMyList = personalIds.contains(id)
+                    
+                    if self.generalCacheContents[i].type == .movie {
+                        let key = generateKey(id: id, season: nil, episode: nil)
+                        self.generalCacheContents[i].isWatched = self.watchedSet.contains(key)
+                    }
+                }
+            }
+            
+            // 5. Aggiorna anche l'Hero Movie gigante in alto!
+            if let heroId = self.heroMovie?.tmdbId {
+                self.heroMovie?.inMyList = personalIds.contains(heroId)
+                if self.heroMovie?.type == .movie {
+                    let key = generateKey(id: heroId, season: nil, episode: nil)
+                    self.heroMovie?.isWatched = self.watchedSet.contains(key)
+                }
+            }
+            
+            print("🔄 Sincronizzazione iniziale completata con successo!")
         }
-        
-        return detailedItems
     }
-     */}
+}
+
 // MARK: - 4. VIEWS
     
 struct ContentView: View {
@@ -358,13 +501,15 @@ struct HomeView: View {
                         
                         if let hero = viewModel.heroMovie {
                             HeroSection(item: hero, viewModel: viewModel) {
-                                //viewModel.toggleItemWatched(itemId: hero.id)
+                                viewModel.toggleItemWatched(itemId: hero.id)
                             }
                         }
                         
                         CategoryRow(title: "Di tendenza ora", items: viewModel.viewTrendings, viewModel: viewModel)
-                        CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel) .animation(.default, value: viewModel.keepWatching)
-                        CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel) .animation(.default, value: viewModel.keepWatching)
+                        CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel)
+                            .animation(.default, value: viewModel.keepWatching)
+                        CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel)
+                            .animation(.default, value: viewModel.keepWatching)
                         
                         Spacer(minLength: 100)
                     }
@@ -397,10 +542,8 @@ struct HeroSection: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             
-            // 1. NAVIGAZIONE (Rende l'immagine cliccabile)
             NavigationLink(destination: DetailView(item: item, viewModel: viewModel)) {
                 ZStack(alignment: .bottom) {
-                    // Immagine di Sfondo
                     GeometryReader { geo in
                         if let url = URL(string: item.imageName) {
                             AsyncImage(url: url) { phase in
@@ -483,9 +626,8 @@ struct CategoryRow: View {
 
 struct PosterImage: View {
     let urlString: String
-    
-    @State private var image: Image? // L'immagine caricata
-    @State private var isLoading = false // Stato caricamento
+    @State private var image: Image?
+    @State private var isLoading = false
     
     var body: some View {
         ZStack {
@@ -493,14 +635,11 @@ struct PosterImage: View {
                 .fill(Color(UIColor.systemGray6))
             
             if let image = image {
-                image
-                    .resizable()
-                    .scaledToFill()
+                image.resizable().scaledToFill()
             } else if isLoading {
                 ProgressView()
             } else {
-                Image(systemName: "photo")
-                    .foregroundColor(.gray.opacity(0.3))
+                Image(systemName: "photo").foregroundColor(.gray.opacity(0.3))
             }
         }
         .task(id: urlString) {
@@ -508,15 +647,11 @@ struct PosterImage: View {
         }
     }
     
-    // Funzione di scaricamento manuale
     private func loadImage() async {
         guard let url = URL(string: urlString), image == nil else { return }
-        
         isLoading = true
-        
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            
             if let uiImage = UIImage(data: data) {
                 withAnimation(.easeIn(duration: 0.2)) {
                     self.image = Image(uiImage: uiImage)
@@ -527,7 +662,6 @@ struct PosterImage: View {
                 print("⚠️ Errore download manuale [\(urlString)]: \(error.localizedDescription)")
             }
         }
-        
         isLoading = false
     }
 }
@@ -562,253 +696,39 @@ struct MediaCard: View {
             }
         }
     }
-    
 }
 
-// MARK: - DETAIL VIEW (Con gestione episodi)
-
-    struct DetailView: View {
-        let item: MediaItem
-        var viewModel: LibraryViewModel
-        
-        @State private var selectedSeasonId: UUID?
-        
-        @State private var enrichedItem: MediaItem?
-        
-        // Troviamo l'item aggiornato dal ViewModel per avere lo stato "live" (reattivo)
-        var liveItem: MediaItem {
-            if let homeItem = viewModel.viewTrendings.first(where: { $0.id == item.id }) {
-                return homeItem
-            } else {
-                return enrichedItem ?? item //
-            }
+// MARK: - DETAIL VIEW RISTRUTTURATA PER IL COMPILATORE
+struct DetailView: View {
+    let item: MediaItem
+    var viewModel: LibraryViewModel
+    
+    @State private var selectedSeasonId: UUID?
+    @State private var enrichedItem: MediaItem?
+    
+    var liveItem: MediaItem {
+        if let homeItem = viewModel.generalCacheContents.first(where: { $0.tmdbId == item.tmdbId }) {
+            return homeItem
+        } else {
+            return enrichedItem ?? item
         }
+    }
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading) {
+                headerImage
                 
-                // MARK: - HEADER (Immagine Locandina)
-                ZStack(alignment: .bottom) {
-                    if let url = URL(string: liveItem.imageName) {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(height: 300)
-                                    .clipped()
-                                    .overlay(
-                                        LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom)
-                                    )
-                            case .failure:
-                                Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
-                            case .empty:
-                                Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
-                                    .overlay(ProgressView())
-                            @unknown default:
-                                EmptyView()
-                            }
-                        }
-                    } else {
-                        Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
-                    }
-                }
-                .frame(height: 300)
-                
-                // MARK: - INFO E AZIONI
                 VStack(alignment: .leading, spacing: 15) {
-                    Text(liveItem.title)
-                        .font(.largeTitle)
-                        .bold()
-                        .foregroundStyle(.primary)
-                        .shadow(color: .black, radius: 10)
+                    titleAndMetadata
+                    actionButtons
                     
-                    // Metadati (Match, Anno, Durata)
-                    HStack {
-                        Text("\(liveItem.matchPercentage)% Match").foregroundStyle(.green).bold()
-                        Text(liveItem.year).foregroundStyle(.gray)
-                        if liveItem.type == .series {
-                            Text("\(liveItem.seasons.count) Stagioni").foregroundStyle(.gray)
-                        } else {
-                            Text(liveItem.duration ?? "Caricamento...").foregroundStyle(.gray)
-                        }
-                        Text("HD").font(.caption).padding(2).border(Color.gray).foregroundStyle(.gray)
-                    }.font(.subheadline)
-                    
-                    // MARK: - PULSANTE CHECKBOX "VISTO" + AGGIUNGI ALLA LISTA
-                    if liveItem.type == .movie {
-                        HStack(spacing: 12){
-                            // bottone per aggiunta alla lista
-                            Button(action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                    //viewModel.toggleInMyList(itemId: liveItem.id)
-                                }
-                            }) {
-                                Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
-                                    .font(.title3)
-                                    .fontWeight(.semibold)
-                                    .frame(width: 25, height: 25)
-                                    .padding()
-                                    .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
-                                    .clipShape(Circle())
-                                    
-                            }
-                            .padding(.vertical, 5)
-                            
-                            // bottone per segnare come visto
-                            Button(action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                    //viewModel.toggleItemWatched(itemId: liveItem.id)
-                                }
-                            }) {
-                                HStack {
-                                    Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle")
-                                        .font(.title3)
-                                    
-                                    Text(liveItem.isWatched ? "Già visto" : "Segna come visto")
-                                        .fontWeight(.bold)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(liveItem.isWatched ? Color.green : Color.white)
-                                .foregroundColor(liveItem.isWatched ? .white : .black)
-                                .cornerRadius(8)
-                            }
-                            .padding(.vertical, 5)
-                        }
-                    }
-                    else{
-                        // bottone per aggiunta alla lista
-                        Button(action: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                //viewModel.toggleInMyList(itemId: liveItem.id)
-                            }
-                        }) {
-                            Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
-                                .font(.title3)
-                                .fontWeight(.semibold)
-                                .frame(width: 25, height: 25)
-                                .padding()
-                                .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
-                                .clipShape(Circle())
-                                
-                        }
-                        .padding(.vertical, 5)
-                    }
-                    
-                    // Descrizione Trama
                     Text(liveItem.description)
                         .foregroundStyle(.primary)
                         .lineSpacing(4)
                         .padding(.top, 5)
                     
-                    // --- LOGICA EPISODI SERIE TV ---
-                    if liveItem.type == .series && !liveItem.seasons.isEmpty {
-                        Divider().background(Color.gray).padding(.vertical)
-                        
-                        // Selettore Stagioni
-                        if liveItem.seasons.count > 1 {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack {
-                                    ForEach(liveItem.seasons) { season in
-                                        Button(action: { selectedSeasonId = season.id }) {
-                                            Text("Stagione \(season.number)")
-                                                .bold()
-                                                .padding(.vertical, 8)
-                                                .padding(.horizontal, 16)
-                                                .background((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? Color.white : Color.gray.opacity(0.3))
-                                                .foregroundColor((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? .black : .white)
-                                                .cornerRadius(20)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.bottom, 10)
-                        }
-                        
-                        // Lista Episodi
-                        let currentSeason = liveItem.seasons.first(where: { $0.id == (selectedSeasonId ?? liveItem.seasons.first?.id) })
-                        
-                        if let season = currentSeason {
-                            ForEach(season.episodes) { episode in
-                                HStack(alignment: .center, spacing: 12) {
-                                    
-                                    // Thumbnail Episodio
-                                    ZStack(alignment: .bottomLeading) {
-                                        Rectangle().fill(Color.gray.opacity(0.3))
-                                        
-                                        if let url = episode.imageURL {
-                                            AsyncImage(url: url) { phase in
-                                                if let image = phase.image {
-                                                    image.resizable().aspectRatio(contentMode: .fill)
-                                                } else { ProgressView() }
-                                            }
-                                        } else {
-                                            Image(systemName: "film").foregroundStyle(.gray)
-                                        }
-                                    }
-                                    .frame(width: 130, height: 75)
-                                    .clipped()
-                                    .cornerRadius(6)
-                                    .overlay(
-                                        Text(episode.duration)
-                                            .font(.caption2).bold().foregroundColor(.white)
-                                            .padding(4).background(Color.black.opacity(0.7)).cornerRadius(2).padding(4),
-                                        alignment: .bottomLeading
-                                    )
-                                    
-                                    // Testo Episodio
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("\(episode.number). \(episode.title)")
-                                            .font(.subheadline).bold().foregroundStyle(.primary).lineLimit(1)
-                                        Text(episode.plot)
-                                            .font(.caption).foregroundStyle(.gray).lineLimit(2).multilineTextAlignment(.leading)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    
-                                    // Checkbox Singolo Episodio
-                                    Button(action: {
-                                        // 1. Calcoliamo il nuovo stato (opposto di quello attuale)
-                                        let newState = !episode.isWatched
-                                        
-                                        // 2. AGGIORNAMENTO LOCALE (Per la Ricerca)
-                                        // Se stiamo visualizzando enrichedItem (Ricerca), dobbiamo aggiornarlo manualmente
-                                        // altrimenti la spunta verde non appare
-                                        if var enriched = enrichedItem, enriched.id == liveItem.id {
-                                            if let sIndex = enriched.seasons.firstIndex(where: { $0.id == season.id }),
-                                               let eIndex = enriched.seasons[sIndex].episodes.firstIndex(where: { $0.id == episode.id }) {
-                                                
-                                                // Modifichiamo la copia locale per feedback istantaneo
-                                                enrichedItem?.seasons[sIndex].episodes[eIndex].isWatched = newState
-                                            }
-                                        }
-                                        
-                                        // 3. AGGIORNAMENTO LOGICO (Database + Home)
-                                        // Usiamo la nuova funzione che accetta ID diretti
-                                        if let tmdbId = item.tmdbId {
-                                            viewModel.updateEpisodeStatus(
-                                                tmdbId: tmdbId,
-                                                season: season.number,
-                                                episode: episode.number,
-                                                isWatched: newState,
-                                                sourceItem: liveItem 
-                                            )
-                                        }
-                                        
-                                    }) {
-                                        Image(systemName: episode.isWatched ? "checkmark.circle.fill" : "circle")
-                                            .font(.title2)
-                                            .foregroundColor(episode.isWatched ? .red : .gray) // Ho visto che usavi .red, ottimo
-                                            .padding(.leading, 4)
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                                .contentShape(Rectangle())
-                            }
-                        }
-                    }
+                    episodesSection
                 }
                 .padding()
             }
@@ -819,44 +739,179 @@ struct MediaCard: View {
             if selectedSeasonId == nil {
                 selectedSeasonId = item.seasons.first?.id
             }
+            if !viewModel.generalCacheContents.contains(where: { $0.tmdbId == item.tmdbId }) {
+                viewModel.generalCacheContents.append(item)
+            }
         }
         .task {
-            // 1. Se è una SERIE
-                if item.type == .series {
-                // Scarichiamo e CATTURIAMO il risultato nella variabile 'updated'
+            if item.type == .series {
                 let updated = await viewModel.loadEpisodes(for: item)
-                
                 await MainActor.run {
-                    // Salviamo il risultato nello stato locale della vista
                     self.enrichedItem = updated
-                    
-                    // Selezioniamo la prima stagione automaticamente
-                    if selectedSeasonId == nil {
-                        selectedSeasonId = updated.seasons.first?.id
+                    if selectedSeasonId == nil { selectedSeasonId = updated.seasons.first?.id }
+                }
+            } else if item.type == .movie {
+                let updated = await viewModel.loadMovieDuration(for: item)
+                await MainActor.run { self.enrichedItem = updated }
+            }
+        }
+    }
+    
+    // MARK: - Sub-Components
+    private var headerImage: some View {
+        ZStack(alignment: .bottom) {
+            if let url = URL(string: liveItem.imageName) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().aspectRatio(contentMode: .fill).frame(height: 300).clipped()
+                            .overlay(LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom))
+                    case .failure, .empty:
+                        Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
+                    @unknown default: EmptyView()
                     }
                 }
+            } else {
+                Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
             }
-            // 2. Se è un FILM
-            else if item.type == .movie {
-                let updated = await viewModel.loadMovieDuration(for: item)
-                
-                await MainActor.run {
-                    // Salviamo la durata scaricata
-                    self.enrichedItem = updated
+        }
+        .frame(height: 300)
+    }
+    
+    private var titleAndMetadata: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(liveItem.title)
+                .font(.largeTitle).bold().foregroundStyle(.primary).shadow(color: .black, radius: 10)
+            
+            HStack {
+                Text("\(liveItem.matchPercentage)% Match").foregroundStyle(.green).bold()
+                Text(liveItem.year).foregroundStyle(.gray)
+                if liveItem.type == .series {
+                    Text("\(liveItem.seasons.count) Stagioni").foregroundStyle(.gray)
+                } else {
+                    Text(liveItem.duration ?? "Caricamento...").foregroundStyle(.gray)
+                }
+                Text("HD").font(.caption).padding(2).border(Color.gray).foregroundStyle(.gray)
+            }.font(.subheadline)
+        }
+    }
+    
+    @ViewBuilder
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            Button(action: {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                    viewModel.toggleInMyList(itemId: liveItem.id)
+                }
+            }) {
+                Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
+                    .font(.title3).fontWeight(.semibold).frame(width: 25, height: 25).padding()
+                    .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
+                    .clipShape(Circle())
+            }
+            .padding(.vertical, 5)
+            
+            if liveItem.type == .movie {
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                        viewModel.toggleItemWatched(itemId: liveItem.id)
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle").font(.title3)
+                        Text(liveItem.isWatched ? "Già visto" : "Segna come visto").fontWeight(.bold)
+                    }
+                    .frame(maxWidth: .infinity).padding()
+                    .background(liveItem.isWatched ? Color.green : Color.white)
+                    .foregroundColor(liveItem.isWatched ? .white : .black)
+                    .cornerRadius(8)
+                }
+                .padding(.vertical, 5)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var episodesSection: some View {
+        if liveItem.type == .series && !liveItem.seasons.isEmpty {
+            Divider().background(Color.gray).padding(.vertical)
+            
+            if liveItem.seasons.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(liveItem.seasons) { season in
+                            Button(action: { selectedSeasonId = season.id }) {
+                                Text("Stagione \(season.number)")
+                                    .bold().padding(.vertical, 8).padding(.horizontal, 16)
+                                    .background((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? Color.white : Color.gray.opacity(0.3))
+                                    .foregroundColor((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? .black : .white)
+                                    .cornerRadius(20)
+                            }
+                        }
+                    }
+                }
+                .padding(.bottom, 10)
+            }
+            
+            if let season = liveItem.seasons.first(where: { $0.id == (selectedSeasonId ?? liveItem.seasons.first?.id) }) {
+                ForEach(season.episodes) { episode in
+                    episodeRow(season: season, episode: episode)
                 }
             }
         }
     }
+    
+    private func episodeRow(season: Season, episode: Episode) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack(alignment: .bottomLeading) {
+                Rectangle().fill(Color.gray.opacity(0.3))
+                if let url = episode.imageURL {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image { image.resizable().aspectRatio(contentMode: .fill) }
+                        else { ProgressView() }
+                    }
+                } else {
+                    Image(systemName: "film").foregroundStyle(.gray)
+                }
+            }
+            .frame(width: 130, height: 75).clipped().cornerRadius(6)
+            .overlay(
+                Text(episode.duration).font(.caption2).bold().foregroundColor(.white)
+                    .padding(4).background(Color.black.opacity(0.7)).cornerRadius(2).padding(4),
+                alignment: .bottomLeading
+            )
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(episode.number). \(episode.title)").font(.subheadline).bold().foregroundStyle(.primary).lineLimit(1)
+                Text(episode.plot).font(.caption).foregroundStyle(.gray).lineLimit(2).multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Button(action: {
+                let newState = !episode.isWatched
+                if var enriched = enrichedItem, enriched.id == liveItem.id {
+                    if let sIndex = enriched.seasons.firstIndex(where: { $0.id == season.id }),
+                       let eIndex = enriched.seasons[sIndex].episodes.firstIndex(where: { $0.id == episode.id }) {
+                        enrichedItem?.seasons[sIndex].episodes[eIndex].isWatched = newState
+                    }
+                }
+                // CHIAMATA CORRETTA AL VIEW MODEL
+                viewModel.toggleEpisodeWatched(itemId: liveItem.id, seasonId: season.id, episodeId: episode.id)
+            }) {
+                Image(systemName: episode.isWatched ? "checkmark.circle.fill" : "circle")
+                    .font(.title2).foregroundColor(episode.isWatched ? .red : .gray).padding(.leading, 4)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
 }
 
-
-// MARK: PROFILE VIEW
+// MARK: - PROFILE VIEW
 struct ProfileView: View {
-    // ViewModel dedicato
     @State private var vm: ProfileViewModel
     @Environment(\.dismiss) var dismiss
     
-    // Inizializzatore personalizzato
     init(libraryViewModel: LibraryViewModel) {
         _vm = State(initialValue: ProfileViewModel(libraryViewModel: libraryViewModel))
     }
@@ -869,94 +924,52 @@ struct ProfileView: View {
                 ScrollView {
                     VStack(spacing: 30) {
                         
-                        // MARK: - HEADER UTENTE
                         VStack(spacing: 15) {
-                            // Avatar
                             ZStack {
-                                Circle()
-                                    .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                Circle().fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
                                     .frame(width: 100, height: 100)
-                                
                                 Text(String(vm.userEmail.prefix(1)).uppercased())
-                                    .font(.system(size: 40, weight: .bold))
-                                    .foregroundStyle(.primary)
-                            }
-                            .shadow(color: .blue.opacity(0.5), radius: 10)
+                                    .font(.system(size: 40, weight: .bold)).foregroundStyle(.primary)
+                            }.shadow(color: .blue.opacity(0.5), radius: 10)
                             
-                            // Email
-                            Text(vm.userEmail)
-                                .font(.title3)
-                                .bold()
-                                .foregroundStyle(.primary)
-                            
-                            Text("Membro Standard")
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Color.gray.opacity(0.3))
-                                .cornerRadius(5)
-                                .foregroundStyle(.gray)
-                        }
-                        .padding(.top, 40)
+                            Text(vm.userEmail).font(.title3).bold().foregroundStyle(.primary)
+                            Text("Membro Standard").font(.caption).padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.3)).cornerRadius(5).foregroundStyle(.gray)
+                        }.padding(.top, 40)
                         
                         Divider().background(Color.gray.opacity(0.5))
                         
-                        // MARK: - STATISTICHE
                         HStack(spacing: 40) {
                             StatBox(number: vm.watchedMoviesCount, label: "Film Visti")
                             StatBox(number: vm.watchedEpisodesCount, label: "Episodi")
-                        }
-                        .padding(.vertical)
+                        }.padding(.vertical)
                         
-                        // MARK: - IMPOSTAZIONI / LOGOUT
                         VStack(spacing: 0) {
-                            NavigationLink(destination: SettingsView()) {
-                                SettingsRow(icon: "gear", title: "Impostazioni App")
-                            }
+                            NavigationLink(destination: SettingsView()) { SettingsRow(icon: "gear", title: "Impostazioni App") }
                             Divider().background(Color.gray.opacity(0.2))
                             SettingsRow(icon: "info.circle", title: "Versione App", value: vm.appVersion)
-                            
                             Color.clear.frame(height: 40)
                             
-                            // Tasto Logout
                             Button(action: {
                                 Task {
-                                    let success = await vm.performLogout()
-                                    if success {
-                                        dismiss()
-                                        // Qui puoi gestire il reset della root view se necessario
-                                    }
+                                    if await vm.performLogout() { dismiss() }
                                 }
                             }) {
                                 HStack {
                                     Image(systemName: "rectangle.portrait.and.arrow.right")
                                     Text("Esci dall'account")
-                                }
-                                .bold()
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.red.opacity(0.9))
-                                .foregroundColor(.white)
-                                .cornerRadius(10)
+                                }.bold().frame(maxWidth: .infinity).padding()
+                                .background(Color.red.opacity(0.9)).foregroundColor(.white).cornerRadius(10)
                             }
-                        }
-                        .padding(.horizontal)
-                        
-                    }
-                    .padding(.bottom, 50)
+                        }.padding(.horizontal)
+                    }.padding(.bottom, 50)
                 }
             }
-            .navigationTitle("Profilo")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Profilo").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Chiudi") { dismiss() }
-                        .foregroundStyle(.primary)
-                }
+                ToolbarItem(placement: .topBarTrailing) { Button("Chiudi") { dismiss() }.foregroundStyle(.primary) }
             }
-            .task {
-                await vm.fetchUser()
-            }
+            .task { await vm.fetchUser() }
         }
     }
 }
@@ -965,15 +978,10 @@ struct ProfileView: View {
 struct StatBox: View {
     let number: Int
     let label: String
-    
     var body: some View {
         VStack {
-            Text("\(number)")
-                .font(.title).bold()
-                .foregroundStyle(.primary)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.gray)
+            Text("\(number)").font(.title).bold().foregroundStyle(.primary)
+            Text(label).font(.caption).foregroundStyle(.gray)
         }
     }
 }
@@ -982,25 +990,18 @@ struct SettingsRow: View {
     let icon: String
     let title: String
     var value: String? = nil
-    
     var body: some View {
         HStack {
-            Image(systemName: icon)
-                .foregroundStyle(.gray)
-                .frame(width: 30)
-            Text(title)
-                .foregroundStyle(.primary)
+            Image(systemName: icon).foregroundStyle(.gray).frame(width: 30)
+            Text(title).foregroundStyle(.primary)
             Spacer()
-            if let v = value {
-                Text(v).foregroundStyle(.gray).font(.caption)
-            } else {
-                Image(systemName: "chevron.right").foregroundStyle(.gray)
-            }
+            if let v = value { Text(v).foregroundStyle(.gray).font(.caption) }
+            else { Image(systemName: "chevron.right").foregroundStyle(.gray) }
         }
-        .padding()
-        .background(Color.gray.opacity(0.1))
+        .padding().background(Color.gray.opacity(0.1))
     }
 }
+
 #Preview {
     ContentView().preferredColorScheme(.dark)
 }

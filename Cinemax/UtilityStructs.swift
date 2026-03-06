@@ -60,28 +60,54 @@ struct MediaItem: Identifiable, Hashable {
     }
 }
 
-struct watchingItem: Identifiable, Hashable, Codable{
+// MARK: - DATABASE MODELS
+struct watchingItem: Identifiable, Hashable, Codable {
     var id = UUID()
-    let tmdbId: Int?
+    let tmdb_id: Int?
     let user: UUID?
+    
+    enum CodingKeys: String, CodingKey {
+        case tmdb_id = "tmdb_id"
+        case user
+    }
 }
 
-/// Describes rows of table PersonalList(id, user_id,tmdb_id,media_type,season_number,episode_number,created_at,show_id)
-struct personalListItem: Identifiable, Hashable, Codable{
+struct personalListItem: Identifiable, Hashable, Codable {
     var id = UUID()
-    let created_at: String?
-    let user_id: UUID?
     let tmdb_id: Int?
     let media_type: String?
-    let episode_number: Int?
-    let season_number: Int?
+    
+    // Opzionali (lasciamo che Supabase li gestisca di default)
+    var user_id: UUID?
+    var created_at: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case tmdb_id
+        case media_type
+        case user_id
+        case created_at
+    }
 }
 
-struct watchedItem: Identifiable, Hashable, Codable{
-    var id: UUID?
-    var user_id = UUID()
+struct watchedItem: Identifiable, Hashable, Codable {
+    var id = UUID()
     let tmdb_id: Int?
     var media_type: String?
     let season_number: Int?
     let episode_number: Int?
+    
+    // Opzionali
+    var user_id: UUID?
+    var created_at: String?
+    var show_id: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case tmdb_id
+        case media_type
+        case season_number
+        case episode_number
+        case user_id
+        case created_at
+        case show_id
+    }
 }

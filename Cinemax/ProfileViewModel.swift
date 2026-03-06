@@ -4,42 +4,38 @@
 //
 //  Created by Raffaele Prota on 28/12/25.
 //
+
 import Foundation
 import Observation
 import Supabase
 
 @Observable
 class ProfileViewModel {
-    // Riferimento al ViewModel principale per calcolare le statistiche
     var libraryViewModel: LibraryViewModel
-    
-    // Dati dell'utente
     var userEmail: String = "Caricamento..."
     var appVersion: String = "1.0.0"
     
-    // Inizializzatore
     init(libraryViewModel: LibraryViewModel) {
         self.libraryViewModel = libraryViewModel
     }
     
-    // MARK: - Computed Properties (Statistiche)
+    // MARK: - STATISTICHE OTTIMIZZATE
     
+    // Conta semplicemente quante chiavi in memoria iniziano con "movie_"
     var watchedMoviesCount: Int {
-        libraryViewModel.wa.filter { $0.type == .movie && $0.isWatched }.count
+        libraryViewModel.watchedSet.filter { $0.hasPrefix("movie_") }.count
     }
     
+    // Conta semplicemente quante chiavi in memoria iniziano con "episode_"
     var watchedEpisodesCount: Int {
-        libraryViewModel.items.reduce(0) { total, item in
-            total + item.watchedEpisodes
-        }
+        libraryViewModel.watchedSet.filter { $0.hasPrefix("episode_") }.count
     }
     
-    // MARK: - Funzioni
+    // MARK: - LOGICA UTENTE
     
     func fetchUser() async {
         do {
             let session = try await SupabaseManager.shared.client.auth.session
-            // Aggiorniamo l'UI sul thread principale
             await MainActor.run {
                 self.userEmail = session.user.email ?? "Utente sconosciuto"
             }
