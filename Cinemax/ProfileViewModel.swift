@@ -8,6 +8,7 @@
 import Foundation
 import Observation
 import Supabase
+import SwiftUI
 
 @Observable
 class ProfileViewModel {
@@ -19,7 +20,7 @@ class ProfileViewModel {
         self.libraryViewModel = libraryViewModel
     }
     
-    // MARK: - STATISTICHE OTTIMIZZATE
+    // MARK: - STATISTICHE
     
     // Conta semplicemente quante chiavi in memoria iniziano con "movie_"
     var watchedMoviesCount: Int {
@@ -49,10 +50,28 @@ class ProfileViewModel {
     func performLogout() async -> Bool {
         do {
             try await SupabaseManager.shared.client.auth.signOut()
+            
+            await MainActor.run{
+                UserDefaults.standard.set(false, forKey: "isAuthenticated")            }
+            
             return true
+            
         } catch {
             print("Errore logout: \(error)")
             return false
         }
     }
+    
+    func deleteUserAccount() async -> Bool {
+            do {
+                try await SupabaseManager.shared.client.rpc("delete_user_account").execute()
+                
+                try await SupabaseManager.shared.client.auth.signOut()
+                
+                return true
+            } catch {
+                print("Errore durante eliminazione account: \(error)")
+                return false
+            }
+        }
 }

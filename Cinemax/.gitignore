@@ -1,0 +1,13 @@
+build/
+DerivedData/
+*.hmap
+*.ipa
+*.xcuserstate
+project.xcworkspace/xcuserdata/
+*.xcuserdatad
+xcuserdata/
+.build/
+.swiftpm/
+.env
+Config.swift
+.DS_Store

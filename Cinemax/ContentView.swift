@@ -2,7 +2,6 @@
 //  ContentView.swift
 //  Cinemax
 //
-//  Created by Raffaele Prota on 17/12/25.
 //
 
 import SwiftUI
@@ -71,9 +70,9 @@ class LibraryViewModel {
                                 do {
                                     try await SupabaseManager.shared.client.from("keepWatching")
                                         .delete().eq("tmdb_id", value: tmdbId).execute()
-                                    print("🧹 Pulizia zombie eseguita per ID: \(tmdbId)")
+                                    print("Pulizia zombie eseguita per ID: \(tmdbId)")
                                 } catch {
-                                    print("❌ Errore pulizia zombie: \(error)")
+                                    print("Errore pulizia zombie: \(error)")
                                 }
                                 
                                 // Se è finita, ci assicuriamo che sia tra i "Visti" definitivi
@@ -137,7 +136,7 @@ class LibraryViewModel {
             await MainActor.run {
                 self.watchedSet = newWatchedSet
             }
-            print("✅ Storico caricato: \(newWatchedSet.count) elementi visti trovati.")
+            print("Storico caricato: \(newWatchedSet.count) elementi visti trovati.")
             
         } catch {
             print("Errore caricamento storico visti: \(error)")
@@ -307,8 +306,8 @@ class LibraryViewModel {
                         do {
                             try await SupabaseManager.shared.client.from("keepWatching").delete()
                                 .eq("tmdbId", value: tmdbSeriesId).execute()
-                            print("✅ Serie completata: cancellata da keepWatching!")
-                        } catch { print("❌ Errore delete keepWatching: \(error)") }
+                            print("Serie completata: cancellata da keepWatching!")
+                        } catch { print("Errore delete keepWatching: \(error)") }
                         
                         let seriesLog = watchedItem(tmdb_id: tmdbSeriesId, media_type: "Serie TV", season_number: nil, episode_number: nil)
                         try? await SupabaseManager.shared.client.from("watched_items").insert(seriesLog).execute()
@@ -463,7 +462,7 @@ class LibraryViewModel {
                 }
             }
             
-            print("🔄 Sincronizzazione iniziale completata con successo!")
+            print("Sincronizzazione iniziale completata")
         }
     }
 }
@@ -472,8 +471,14 @@ class LibraryViewModel {
     
 struct ContentView: View {
     @State private var viewModel = LibraryViewModel()
-    @AppStorage("isDarkMode") private var isDarkMode = true
-
+    @State private var profileVM: ProfileViewModel
+    @AppStorage("selectedTheme") private var selectedTheme: Theme = .system
+    
+    init() {
+        let sharedLibrary = LibraryViewModel()
+        _profileVM = State(initialValue: ProfileViewModel(libraryViewModel: sharedLibrary))
+    }
+    
     var body: some View {
         TabView {
             HomeView(viewModel: viewModel)
@@ -481,15 +486,26 @@ struct ContentView: View {
             
             SearchView(libraryViewModel: viewModel)
                 .tabItem { Label("Cerca", systemImage: "magnifyingglass") }
+
+            ProfileView()
+                .tabItem { Label("Profilo", systemImage: "person.crop.circle") }
+
         }
-        .accentColor(isDarkMode ? .white : .blue)
-        .preferredColorScheme(isDarkMode ? .dark : .light)
+        .preferredColorScheme(currentScheme)
+        .environment(profileVM)
     }
+    var currentScheme: ColorScheme? {
+        switch selectedTheme {
+        case .light: return .light
+        case .dark: return .dark
+        case .system: return nil
+        }
+    }
+
 }
 
 struct HomeView: View {
     var viewModel: LibraryViewModel
-    @State private var showProfile = false
     
     var body: some View {
         NavigationStack {
@@ -515,20 +531,6 @@ struct HomeView: View {
                     }
                 }
                 .ignoresSafeArea(edges: .top)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        showProfile = true
-                    }) {
-                        Image(systemName: "person.crop.circle")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                    }
-                }
-            }
-            .sheet(isPresented: $showProfile) {
-                ProfileView(libraryViewModel: viewModel)
             }
         }
     }
@@ -567,7 +569,8 @@ struct HeroSection: View {
             
             VStack(spacing: 16) {
                 Text(item.type.rawValue.uppercased())
-                    .font(.caption).bold().tracking(2).foregroundColor(.gray)
+                    .font(.caption).bold().tracking(2)
+                    .foregroundColor(.gray)
                     .allowsHitTesting(false)
                 Text(item.title)
                     .font(.system(size: 40, weight: .heavy))
@@ -608,7 +611,11 @@ struct CategoryRow: View {
     
     var body: some View {
         VStack(alignment: .leading) {
-            Text(title).font(.headline).bold().foregroundStyle(.primary).padding(.horizontal)
+            Text(title)
+                .font(.headline)
+                .bold()
+                .foregroundStyle(.primary)
+                .padding(.horizontal)
             
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -639,7 +646,8 @@ struct PosterImage: View {
             } else if isLoading {
                 ProgressView()
             } else {
-                Image(systemName: "photo").foregroundColor(.gray.opacity(0.3))
+                Image(systemName: "photo")
+                    .foregroundColor(.gray.opacity(0.3))
             }
         }
         .task(id: urlString) {
@@ -659,7 +667,7 @@ struct PosterImage: View {
             }
         } catch {
             if (error as NSError).code != -999 {
-                print("⚠️ Errore download manuale [\(urlString)]: \(error.localizedDescription)")
+                print("Errore download manuale [\(urlString)]: \(error.localizedDescription)")
             }
         }
         isLoading = false
@@ -698,13 +706,14 @@ struct MediaCard: View {
     }
 }
 
-// MARK: - DETAIL VIEW RISTRUTTURATA PER IL COMPILATORE
+// MARK: - DETAIL VIEW
 struct DetailView: View {
     let item: MediaItem
     var viewModel: LibraryViewModel
     
     @State private var selectedSeasonId: UUID?
     @State private var enrichedItem: MediaItem?
+    @AppStorage("selectedTheme") private var selectedTheme: Theme = .system
     
     var liveItem: MediaItem {
         if let homeItem = viewModel.generalCacheContents.first(where: { $0.tmdbId == item.tmdbId }) {
@@ -733,7 +742,7 @@ struct DetailView: View {
                 .padding()
             }
         }
-        .background(Color.black)
+        .preferredColorScheme(currentScheme)
         .toolbarRole(.editor)
         .onAppear {
             if selectedSeasonId == nil {
@@ -757,6 +766,14 @@ struct DetailView: View {
         }
     }
     
+    var currentScheme: ColorScheme? {
+        switch selectedTheme {
+        case .light: return .light
+        case .dark: return .dark
+        case .system: return nil
+        }
+    }
+    
     // MARK: - Sub-Components
     private var headerImage: some View {
         ZStack(alignment: .bottom) {
@@ -764,15 +781,22 @@ struct DetailView: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().aspectRatio(contentMode: .fill).frame(height: 300).clipped()
+                        image.resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(height: 300)
+                            .clipped()
                             .overlay(LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom))
                     case .failure, .empty:
-                        Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
+                        Rectangle()
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(height: 300)
                     @unknown default: EmptyView()
                     }
                 }
             } else {
-                Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 300)
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(height: 300)
             }
         }
         .frame(height: 300)
@@ -781,18 +805,26 @@ struct DetailView: View {
     private var titleAndMetadata: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(liveItem.title)
-                .font(.largeTitle).bold().foregroundStyle(.primary).shadow(color: .black, radius: 10)
+                .font(.largeTitle)
+                .bold()
+                .foregroundStyle(.primary)
+                .shadow(color: .black, radius: 10)
             
             HStack {
-                Text("\(liveItem.matchPercentage)% Match").foregroundStyle(.green).bold()
-                Text(liveItem.year).foregroundStyle(.gray)
+                Text("\(liveItem.matchPercentage)% Match")
+                    .foregroundStyle(.green)
+                    .bold()
+                Text(liveItem.year)
+                    .foregroundStyle(.gray)
                 if liveItem.type == .series {
-                    Text("\(liveItem.seasons.count) Stagioni").foregroundStyle(.gray)
+                    Text("\(liveItem.seasons.count) Stagioni")
+                        .foregroundStyle(.gray)
                 } else {
-                    Text(liveItem.duration ?? "Caricamento...").foregroundStyle(.gray)
+                    Text(liveItem.duration ?? "Caricamento...")
+                        .foregroundStyle(.gray)
                 }
-                Text("HD").font(.caption).padding(2).border(Color.gray).foregroundStyle(.gray)
-            }.font(.subheadline)
+            }
+            .font(.subheadline)
         }
     }
     
@@ -805,8 +837,11 @@ struct DetailView: View {
                 }
             }) {
                 Image(systemName: liveItem.inMyList ? "checkmark.circle.fill" : "plus")
-                    .font(.title3).fontWeight(.semibold).frame(width: 25, height: 25).padding()
-                    .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.15))
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .frame(width: 25, height: 25)
+                    .padding()
+                    .background(liveItem.inMyList ? Color.green : Color.gray.opacity(0.2))
                     .clipShape(Circle())
             }
             .padding(.vertical, 5)
@@ -818,11 +853,17 @@ struct DetailView: View {
                     }
                 }) {
                     HStack {
-                        Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle").font(.title3)
-                        Text(liveItem.isWatched ? "Già visto" : "Segna come visto").fontWeight(.bold)
+                        Image(systemName: liveItem.isWatched ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                        Text(liveItem.isWatched ? "Già visto" : "Segna come visto")
+                            .fontWeight(.bold)
                     }
-                    .frame(maxWidth: .infinity).padding()
-                    .background(liveItem.isWatched ? Color.green : Color.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        liveItem.isWatched ? Color.green :
+                        (currentScheme == .light ? Color.gray.opacity(0.2) : Color.white.opacity(0.1))
+                    )
                     .foregroundColor(liveItem.isWatched ? .white : .black)
                     .cornerRadius(8)
                 }
@@ -834,7 +875,9 @@ struct DetailView: View {
     @ViewBuilder
     private var episodesSection: some View {
         if liveItem.type == .series && !liveItem.seasons.isEmpty {
-            Divider().background(Color.gray).padding(.vertical)
+            Divider()
+                .background(.ultraThinMaterial)
+                .padding(.vertical)
             
             if liveItem.seasons.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -842,7 +885,9 @@ struct DetailView: View {
                         ForEach(liveItem.seasons) { season in
                             Button(action: { selectedSeasonId = season.id }) {
                                 Text("Stagione \(season.number)")
-                                    .bold().padding(.vertical, 8).padding(.horizontal, 16)
+                                    .bold()
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 16)
                                     .background((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? Color.white : Color.gray.opacity(0.3))
                                     .foregroundColor((selectedSeasonId ?? liveItem.seasons.first?.id) == season.id ? .black : .white)
                                     .cornerRadius(20)
@@ -876,14 +921,28 @@ struct DetailView: View {
             }
             .frame(width: 130, height: 75).clipped().cornerRadius(6)
             .overlay(
-                Text(episode.duration).font(.caption2).bold().foregroundColor(.white)
-                    .padding(4).background(Color.black.opacity(0.7)).cornerRadius(2).padding(4),
-                alignment: .bottomLeading
+                Text(episode.duration)
+                    .font(.caption2)
+                    .bold()
+                    .foregroundColor(.white)
+                    .padding(4)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(2)
+                    .padding(4),
+                    alignment: .bottomLeading
             )
             
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(episode.number). \(episode.title)").font(.subheadline).bold().foregroundStyle(.primary).lineLimit(1)
-                Text(episode.plot).font(.caption).foregroundStyle(.gray).lineLimit(2).multilineTextAlignment(.leading)
+                Text("\(episode.number). \(episode.title)")
+                    .font(.subheadline)
+                    .bold()
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(episode.plot)
+                    .font(.caption)
+                    .foregroundStyle(.gray)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             
@@ -909,12 +968,8 @@ struct DetailView: View {
 
 // MARK: - PROFILE VIEW
 struct ProfileView: View {
-    @State private var vm: ProfileViewModel
+    @Environment(ProfileViewModel.self) var vm
     @Environment(\.dismiss) var dismiss
-    
-    init(libraryViewModel: LibraryViewModel) {
-        _vm = State(initialValue: ProfileViewModel(libraryViewModel: libraryViewModel))
-    }
     
     var body: some View {
         NavigationStack {
@@ -934,7 +989,9 @@ struct ProfileView: View {
                             
                             Text(vm.userEmail).font(.title3).bold().foregroundStyle(.primary)
                             Text("Membro Standard").font(.caption).padding(.horizontal, 10).padding(.vertical, 4)
-                                .background(Color.gray.opacity(0.3)).cornerRadius(5).foregroundStyle(.gray)
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(5)
+                                .foregroundStyle(.gray)
                         }.padding(.top, 40)
                         
                         Divider().background(Color.gray.opacity(0.5))
@@ -942,7 +999,8 @@ struct ProfileView: View {
                         HStack(spacing: 40) {
                             StatBox(number: vm.watchedMoviesCount, label: "Film Visti")
                             StatBox(number: vm.watchedEpisodesCount, label: "Episodi")
-                        }.padding(.vertical)
+                        }
+                        .padding(.vertical)
                         
                         VStack(spacing: 0) {
                             NavigationLink(destination: SettingsView()) { SettingsRow(icon: "gear", title: "Impostazioni App") }
@@ -958,17 +1016,22 @@ struct ProfileView: View {
                                 HStack {
                                     Image(systemName: "rectangle.portrait.and.arrow.right")
                                     Text("Esci dall'account")
-                                }.bold().frame(maxWidth: .infinity).padding()
-                                .background(Color.red.opacity(0.9)).foregroundColor(.white).cornerRadius(10)
+                                }
+                                .bold()
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.red.opacity(0.9))
+                                .foregroundColor(.white)
+                                .cornerRadius(10)
                             }
-                        }.padding(.horizontal)
-                    }.padding(.bottom, 50)
+                        }
+                        .padding(.horizontal)
+                    }
+                    .padding(.bottom, 50)
                 }
             }
-            .navigationTitle("Profilo").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Chiudi") { dismiss() }.foregroundStyle(.primary) }
-            }
+            .navigationTitle("Profilo")
+            .navigationBarTitleDisplayMode(.inline)
             .task { await vm.fetchUser() }
         }
     }
@@ -992,16 +1055,23 @@ struct SettingsRow: View {
     var value: String? = nil
     var body: some View {
         HStack {
-            Image(systemName: icon).foregroundStyle(.gray).frame(width: 30)
-            Text(title).foregroundStyle(.primary)
+            Image(systemName: icon)
+                .foregroundStyle(.gray)
+                .frame(width: 30)
+            Text(title)
+                .foregroundStyle(.primary)
             Spacer()
-            if let v = value { Text(v).foregroundStyle(.gray).font(.caption) }
-            else { Image(systemName: "chevron.right").foregroundStyle(.gray) }
+            if let v = value {
+                Text(v)
+                    .foregroundStyle(.gray)
+                    .font(.caption)
+            }
+            else {
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.gray)
+            }
         }
-        .padding().background(Color.gray.opacity(0.1))
+        .padding()
+        .background(Color.gray.opacity(0.1))
     }
-}
-
-#Preview {
-    ContentView().preferredColorScheme(.dark)
 }

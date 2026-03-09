@@ -2,11 +2,11 @@
 //  UtilityStructs.swift
 //  Cinemax
 //
-//  Created by Raffaele Prota on 02/03/26.
 //
 
 import Foundation
 
+// Structs to describe tv series/film
 struct Episode: Identifiable, Hashable {
     let id = UUID()
     let number: Int
@@ -42,17 +42,11 @@ struct MediaItem: Identifiable, Hashable {
     var isWatched: Bool = false
     var inMyList: Bool = false
     var isInProgress: Bool {
-            guard type == .series else { return false }
-            return watchedEpisodes > 0 && watchedEpisodes < totalEpisodes
-        }
-    
-    var seasons: [Season] = []
-    
-    // Helper per ottenere l'episodio corrente
-    var totalEpisodes: Int {
-        seasons.reduce(0) { $0 + $1.episodes.count }
+        guard type == .series else { return false } // a film can be only watched or not. Will not store info about the remaining time
+        return watchedEpisodes > 0 && watchedEpisodes < totalEpisodes
     }
-    
+    var seasons: [Season] = []
+    var totalEpisodes: Int { seasons.reduce(0) { $0 + $1.episodes.count } }
     var watchedEpisodes: Int {
         seasons.reduce(0) { seasonCount, season in
             seasonCount + season.episodes.filter { $0.isWatched }.count
@@ -61,6 +55,9 @@ struct MediaItem: Identifiable, Hashable {
 }
 
 // MARK: - DATABASE MODELS
+// each struct represents a specific table of DB
+
+// corrisponds to keepWatching on DB
 struct watchingItem: Identifiable, Hashable, Codable {
     var id = UUID()
     let tmdb_id: Int?
@@ -72,12 +69,12 @@ struct watchingItem: Identifiable, Hashable, Codable {
     }
 }
 
+// corrisponds to personalList on DB
 struct personalListItem: Identifiable, Hashable, Codable {
     var id = UUID()
     let tmdb_id: Int?
     let media_type: String?
     
-    // Opzionali (lasciamo che Supabase li gestisca di default)
     var user_id: UUID?
     var created_at: String?
     
@@ -89,6 +86,7 @@ struct personalListItem: Identifiable, Hashable, Codable {
     }
 }
 
+// corrisponds to watched_items on DB
 struct watchedItem: Identifiable, Hashable, Codable {
     var id = UUID()
     let tmdb_id: Int?
@@ -96,7 +94,6 @@ struct watchedItem: Identifiable, Hashable, Codable {
     let season_number: Int?
     let episode_number: Int?
     
-    // Opzionali
     var user_id: UUID?
     var created_at: String?
     var show_id: Int?

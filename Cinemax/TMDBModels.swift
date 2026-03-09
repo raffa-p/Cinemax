@@ -2,37 +2,32 @@
 //  TMDBModels.swift
 //  Cinemax
 //
-//  Created by Raffaele Prota on 17/12/25.
 //
 
 import Foundation
 
-// Risposta generica per le liste (es. Trending, Search)
+// Generic response from DB
 struct TMDBResponse: Codable {
     let results: [TMDBItem]
 }
 
-// Il singolo film/serie come arriva dall'API
+// struct to translate info from API
 struct TMDBItem: Codable, Identifiable {
     let id: Int
-    let title: String?        // I film hanno 'title'
-    let name: String?         // Le serie hanno 'name'
+    let title: String?        // only for film
+    let name: String?         // only for tv serie
     let overview: String?
-    let posterPath: String?   // es: "/abc1234.jpg"
-    let backdropPath: String? // Immagine grande orizzontale
+    let posterPath: String?
+    let backdropPath: String?
     let voteAverage: Double?
-    let releaseDate: String?  // Film
-    let firstAirDate: String? // Serie
+    let releaseDate: String?  // only for film
+    let firstAirDate: String? // only for tv serie
     let mediaType: String?
+    let seasons: [TMDBSeasonMetadata]? // only for tv serie
+    let episodes: [TMDBEpisode]? // only for tv serie
+    let runtime: Int? // only for films
     
-    // MARK: SERIE
-    let seasons: [TMDBSeasonMetadata]?
-    let episodes: [TMDBEpisode]?
-    
-    // MARK: MOVIE
-    let runtime: Int? // Durata in minuti
-    
-    // Mappatura dei nomi JSON ai nomi Swift
+
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview
         case posterPath = "poster_path"
@@ -53,11 +48,7 @@ struct TMDBItem: Codable, Identifiable {
     }
     var fullPosterURL: URL? {
         guard let path = posterPath, !path.isEmpty else { return nil }
-        
-        // Rimuove eventuali slash iniziali doppi o singoli per evitare //abc.jpg
-        let cleanPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        
-        return URL(string: "https://image.tmdb.org/t/p/w500/\(cleanPath)")
+        return URL(string: "https://image.tmdb.org/t/p/w500/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))")
     }
 }
 
