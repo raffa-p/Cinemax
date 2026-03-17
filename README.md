@@ -25,7 +25,8 @@ Cinemax is a simple and elegant iOS app to track your favorite movies and TV sho
 
 | Home | Search | Details | Profile |
 | :-: | :-: | :-: | :-: |
-| <img src="https://github.com/user-attachments/assets/cfd6b190-be33-4a75-b4f3-097cb0806613" width="200" /> | <img src="https://github.com/user-attachments/assets/316844f7-75ac-471b-959c-0c9790affffd" width="200" /> | <img src="https://github.com/user-attachments/assets/810cf66a-972f-4dcd-af33-1cb76bb8bbd1" width="200" /> | <img src="https://github.com/user-attachments/assets/c6a9fd51-6fbb-4d15-8952-a9983b9a0de9" width="200" /> |
+| <img src="https://github.com/user-attachments/assets/cfd6b190-be33-4a75-b4f3-097cb0806613" width="200" /> | <img src="https://github.com/user-attachments/assets/316844f7-75ac-471b-959c-0c9790affffd" width="200" /> | <img src="https://github.com/user-attachments/assets/810cf66a-972f-4dcd-af33-1cb76bb8bbd1" width="200" /> | <img width="585" height="1266" alt="3" src="https://github.com/user-attachments/assets/154f5d3b-2462-4dd0-9f29-ce8af8d2006f" /> |
+
 
 ---
 **Created by ProtaDev**
