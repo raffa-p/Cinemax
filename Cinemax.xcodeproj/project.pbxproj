@@ -14,9 +14,22 @@
 		877D53A62EF312EA00F110C1 /* Cinemax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cinemax.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		87C459432F69CBDC0075B8F8 /* Exceptions for "Cinemax" folder in "Cinemax" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 877D53A52EF312EA00F110C1 /* Cinemax */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		877D53A82EF312EA00F110C1 /* Cinemax */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				87C459432F69CBDC0075B8F8 /* Exceptions for "Cinemax" folder in "Cinemax" target */,
+			);
 			path = Cinemax;
 			sourceTree = "<group>";
 		};
@@ -274,8 +287,10 @@
 				DEVELOPMENT_TEAM = 89H8VP868Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Cinemax/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Cinemax;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Cinemax usa la tua galleria per permetterti di caricare la tua foto profilo.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -310,8 +325,10 @@
 				DEVELOPMENT_TEAM = 89H8VP868Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Cinemax/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Cinemax;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Cinemax usa la tua galleria per permetterti di caricare la tua foto profilo.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -24,10 +24,14 @@ struct HomeView: View {
                         }
                         
                         CategoryRow(title: "Di tendenza ora", items: viewModel.viewTrendings, viewModel: viewModel)
-                        CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel)
-                            .animation(.default, value: viewModel.keepWatching)
-                        CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel)
-                            .animation(.default, value: viewModel.keepWatching)
+                        if !viewModel.keepWatching.isEmpty {
+                            CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel)
+                                .animation(.default, value: viewModel.keepWatching)
+                        }
+                        if !viewModel.personalList.isEmpty || !viewModel.personalListSet.isEmpty {
+                            CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel)
+                                .animation(.default, value: viewModel.keepWatching)
+                        }
                         
                         Spacer(minLength: 100)
                     }

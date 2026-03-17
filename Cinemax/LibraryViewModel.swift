@@ -332,80 +332,80 @@ class LibraryViewModel {
     
     // MARK: - DOWNLOAD DETAILS
         
-        @discardableResult
-        func loadEpisodes(for item: MediaItem) async -> MediaItem {
-            guard item.type == .series, item.seasons.isEmpty, let tmdbId = item.tmdbId else { return item }
+    @discardableResult
+    func loadEpisodes(for item: MediaItem) async -> MediaItem {
+        guard item.type == .series, item.seasons.isEmpty, let tmdbId = item.tmdbId else { return item }
+        
+        var updatedItem = item
+        
+        do {
+            let details = try await MovieService.shared.fetchShowDetails(id: tmdbId)
+            var newSeasons: [Season] = []
             
-            var updatedItem = item
-            
-            do {
-                let details = try await MovieService.shared.fetchShowDetails(id: tmdbId)
-                var newSeasons: [Season] = []
+            for seasonMeta in details.seasons ?? [] where seasonMeta.seasonNumber > 0 {
+                let episodes = try await MovieService.shared.fetchSeasonEpisodes(showId: tmdbId, seasonNumber: seasonMeta.seasonNumber)
                 
-                for seasonMeta in details.seasons ?? [] where seasonMeta.seasonNumber > 0 {
-                    let episodes = try await MovieService.shared.fetchSeasonEpisodes(showId: tmdbId, seasonNumber: seasonMeta.seasonNumber)
-                    
-                    let convertedEpisodes = episodes.map { ep in
-                        let key = generateKey(id: tmdbId, season: seasonMeta.seasonNumber, episode: ep.episodeNumber)
-                        return Episode(
-                            number: ep.episodeNumber,
-                            title: ep.name,
-                            duration: "\(ep.runtime ?? 30)m",
-                            plot: ep.overview.isEmpty ? "Nessuna trama." : ep.overview,
-                            imageURL: ep.stillPath != nil ? URL(string: "https://image.tmdb.org/t/p/w300\(ep.stillPath!)") : nil,
-                            isWatched: watchedSet.contains(key),
-                            show_id: ep.showId
-                        )
-                    }
-                    newSeasons.append(Season(number: seasonMeta.seasonNumber, episodes: convertedEpisodes))
+                let convertedEpisodes = episodes.map { ep in
+                    let key = generateKey(id: tmdbId, season: seasonMeta.seasonNumber, episode: ep.episodeNumber)
+                    return Episode(
+                        number: ep.episodeNumber,
+                        title: ep.name,
+                        duration: "\(ep.runtime ?? 30)m",
+                        plot: ep.overview.isEmpty ? "Nessuna trama." : ep.overview,
+                        imageURL: ep.stillPath != nil ? URL(string: "https://image.tmdb.org/t/p/w300\(ep.stillPath!)") : nil,
+                        isWatched: watchedSet.contains(key),
+                        show_id: ep.showId
+                    )
                 }
-                
-                updatedItem.seasons = newSeasons
-                
-                // Updating cache
-                await MainActor.run {
-                    for i in self.generalCacheContents.indices where self.generalCacheContents[i].tmdbId == tmdbId {
-                        self.generalCacheContents[i].seasons = newSeasons
-                    }
-                    for i in self.keepWatching.indices where self.keepWatching[i].tmdbId == tmdbId {
-                        self.keepWatching[i].seasons = newSeasons
-                    }
-                    for i in self.personalList.indices where self.personalList[i].tmdbId == tmdbId {
-                        self.personalList[i].seasons = newSeasons
-                    }
-                    for i in self.viewTrendings.indices where self.viewTrendings[i].tmdbId == tmdbId {
-                        self.viewTrendings[i].seasons = newSeasons
-                    }
-                }
-            } catch {
-                print("Errore caricamento episodi: \(error)")
+                newSeasons.append(Season(number: seasonMeta.seasonNumber, episodes: convertedEpisodes))
             }
             
-            return updatedItem
-        }
-
-        @discardableResult
-        func loadMovieDuration(for item: MediaItem) async -> MediaItem {
-            guard item.type == .movie, item.duration == nil, let tmdbId = item.tmdbId else { return item }
+            updatedItem.seasons = newSeasons
             
-            var updatedItem = item
-            do {
-                let details = try await MovieService.shared.fetchMovieDetails(id: tmdbId)
-                if let minutes = details.runtime, minutes > 0 {
-                    let hours = minutes / 60
-                    let mins = minutes % 60
-                    updatedItem.duration = "\(hours)h \(mins)m"
-                    
-                    await MainActor.run {
-                        if let index = generalCacheContents.firstIndex(where: { $0.id == item.id }) {
-                            generalCacheContents[index] = updatedItem
-                        }
+            // Updating cache
+            await MainActor.run {
+                for i in self.generalCacheContents.indices where self.generalCacheContents[i].tmdbId == tmdbId {
+                    self.generalCacheContents[i].seasons = newSeasons
+                }
+                for i in self.keepWatching.indices where self.keepWatching[i].tmdbId == tmdbId {
+                    self.keepWatching[i].seasons = newSeasons
+                }
+                for i in self.personalList.indices where self.personalList[i].tmdbId == tmdbId {
+                    self.personalList[i].seasons = newSeasons
+                }
+                for i in self.viewTrendings.indices where self.viewTrendings[i].tmdbId == tmdbId {
+                    self.viewTrendings[i].seasons = newSeasons
+                }
+            }
+        } catch {
+            print("Errore caricamento episodi: \(error)")
+        }
+        
+        return updatedItem
+    }
+
+    @discardableResult
+    func loadMovieDuration(for item: MediaItem) async -> MediaItem {
+        guard item.type == .movie, item.duration == nil, let tmdbId = item.tmdbId else { return item }
+        
+        var updatedItem = item
+        do {
+            let details = try await MovieService.shared.fetchMovieDetails(id: tmdbId)
+            if let minutes = details.runtime, minutes > 0 {
+                let hours = minutes / 60
+                let mins = minutes % 60
+                updatedItem.duration = "\(hours)h \(mins)m"
+                
+                await MainActor.run {
+                    if let index = generalCacheContents.firstIndex(where: { $0.id == item.id }) {
+                        generalCacheContents[index] = updatedItem
                     }
                 }
-            } catch { print("Errore durata film: \(error)") }
-            
-            return updatedItem
-        }
+            }
+        } catch { print("Errore durata film: \(error)") }
+        
+        return updatedItem
+    }
     
     // MARK: - Sincronizzazione Universale
     func syncAllData() async {

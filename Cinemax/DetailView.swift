@@ -249,7 +249,7 @@ struct DetailView: View {
             
             Button(action: {
                 let newState = !episode.isWatched
-                if var enriched = enrichedItem, enriched.id == liveItem.id {
+                if let enriched = enrichedItem, enriched.id == liveItem.id {
                     if let sIndex = enriched.seasons.firstIndex(where: { $0.id == season.id }),
                        let eIndex = enriched.seasons[sIndex].episodes.firstIndex(where: { $0.id == episode.id }) {
                         enrichedItem?.seasons[sIndex].episodes[eIndex].isWatched = newState

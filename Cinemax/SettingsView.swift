@@ -3,6 +3,7 @@
 //  Cinemax
 //
 //
+
 import SwiftUI
 import Foundation
 
@@ -17,20 +18,19 @@ struct SettingsView: View {
     @AppStorage("selectedTheme") private var selectedTheme: Theme = .system
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @State private var showingDeleteAlert = false
-    @State private var showingCacheAlert = false
     @Environment(ProfileViewModel.self) var profileVM
     @AppStorage("isAuthenticated") private var isAuthenticated = true
     
     var body: some View {
         Form {
             Section(header: Text("Aspetto")) {
-                            Picker("Tema", selection: $selectedTheme) {
-                                ForEach(Theme.allCases) { theme in
-                                    Text(theme.rawValue).tag(theme)
-                                }
-                            }
-                            .pickerStyle(.navigationLink)
-                        }
+                Picker("Tema", selection: $selectedTheme) {
+                    ForEach(Theme.allCases) { theme in
+                        Text(theme.rawValue).tag(theme)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+            }
             Section(header: Text("Preferenze")) { // notifications not implemented
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Notifiche Push", isOn: .constant(false))
@@ -41,27 +41,6 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            
-            Section(header: Text("Manutenzione")) {
-                Button(action: {
-                    showingCacheAlert = true
-                }) {
-                    HStack {
-                        Text("Svuota Cache Immagini")
-                            .foregroundColor(.red)
-                        Spacer()
-                        Text("Libera spazio")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-                .alert("Cache Svuotata", isPresented: $showingCacheAlert) {
-                    Button("OK", role: .cancel) { }
-                } message: {
-                    Text("Tutte le immagini temporanee sono state rimosse per liberare spazio.")
-                }
-            }
-            
             Section(header: Text("Account"), footer: Text("L'eliminazione dell'account è irreversibile e comporterà la perdita di tutti i progressi.")) {
                 Button(role: .destructive, action: {
                     showingDeleteAlert = true
