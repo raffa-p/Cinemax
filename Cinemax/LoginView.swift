@@ -7,6 +7,11 @@
 import SwiftUI
 import Supabase
 
+/// A SwiftUI view responsible for handling user login and registration.
+///
+/// This view manages the UI state for email, password, nickname, and confirmation password fields,
+/// as well as loading and error states during authentication processes. It interacts with Supabase
+/// for user authentication and communicates the authentication status back to a parent view.
 struct LoginView: View {
     @Binding var isAuthenticated: Bool
     @State private var email = ""
@@ -22,6 +27,9 @@ struct LoginView: View {
     @FocusState private var focusedField: Field?
     enum Field { case nickname, email, password, confirmPassword }
     
+    /// A computed property that returns `true` if all required form fields are filled, `false` otherwise.
+    ///
+    /// The requirements differ based on whether the view is in sign-up mode or login mode.
     var isFormFilled: Bool {
         if isSignUpMode {
             return !nickname.isEmpty && !email.isEmpty && !password.isEmpty && !confirmPassword.isEmpty
@@ -162,67 +170,75 @@ struct LoginView: View {
     }
     
     // MARK: - LOGICA SUPABASE
+    /// Performs the appropriate authentication action (login or sign-up) based on `isSignUpMode`.
+    ///
+    /// This method validates input, sets the `isLoading` state, and then asynchronously
+    /// interacts with `SupabaseManager` to authenticate the user. It handles success cases
+    /// (setting `isAuthenticated` or showing a confirmation message) and error cases
+    /// (displaying an error message).
+    ///
+    /// - Important: Requires `SupabaseManager.shared.client` to be configured for authentication.
     func performAuthAction() {
-            focusedField = nil
+        focusedField = nil
             
-            if isSignUpMode && password != confirmPassword {
-                errorMessage = "Le password non coincidono. Riprova."
-                showError = true
-                return
-            }
-            
-            isLoading = true
-            
-            Task {
-                do {
-                    if isSignUpMode {
-                        // REGISTRAZIONE
-                        let response = try await SupabaseManager.shared.client.auth.signUp(
-                            email: email,
-                            password: password,
-                            data: ["nickname": .string(nickname)]
-                        )
-                        
-                        await MainActor.run {
-                            if response.session == nil {
-                                errorMessage = "Registrazione completata con successo! 🎉\n\nTi abbiamo inviato una mail per confermare l'account."
-                                showError = true
-                                
-                                isSignUpMode = false
-                                password = ""
-                                confirmPassword = ""
-                            } else {
-                                isAuthenticated = true
-                            }
-                        }
-                    } else {
-                        // LOGIN
-                        let _ = try await SupabaseManager.shared.client.auth.signIn(
-                            email: email,
-                            password: password
-                        )
-                        
-                        await MainActor.run {
+        if isSignUpMode && password != confirmPassword {
+            errorMessage = "Le password non coincidono. Riprova."
+            showError = true
+            return
+        }
+        
+        isLoading = true
+        
+        Task {
+            do {
+                if isSignUpMode {
+                    // REGISTRAZIONE
+                    let response = try await SupabaseManager.shared.client.auth.signUp(
+                        email: email,
+                        password: password,
+                        data: ["nickname": .string(nickname)]
+                    )
+                    
+                    await MainActor.run {
+                        if response.session == nil {
+                            errorMessage = "Registrazione completata con successo! 🎉\n\nTi abbiamo inviato una mail per confermare l'account."
+                            showError = true
+                            
+                            isSignUpMode = false
+                            password = ""
+                            confirmPassword = ""
+                        } else {
                             isAuthenticated = true
                         }
                     }
-                } catch {
+                } else {
+                    // LOGIN
+                    let _ = try await SupabaseManager.shared.client.auth.signIn(
+                        email: email,
+                        password: password
+                    )
+                    
                     await MainActor.run {
-                        let errorMsg = error.localizedDescription
-                        
-                        if errorMsg.lowercased().contains("email not confirmed") {
-                            errorMessage = "Devi prima confermare il tuo indirizzo email. Controlla la tua casella di posta!"
-                        } else {
-                            errorMessage = errorMsg
-                        }
-                        
-                        showError = true
+                        isAuthenticated = true
                     }
                 }
-                
+            } catch {
                 await MainActor.run {
-                    isLoading = false
+                    let errorMsg = error.localizedDescription
+                    
+                    if errorMsg.lowercased().contains("email not confirmed") {
+                        errorMessage = "Devi prima confermare il tuo indirizzo email. Controlla la tua casella di posta!"
+                    } else {
+                        errorMessage = errorMsg
+                    }
+                    
+                    showError = true
                 }
             }
+            
+            await MainActor.run {
+                isLoading = false
+            }
         }
+    }
 }

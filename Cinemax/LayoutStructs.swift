@@ -6,6 +6,12 @@
 
 import SwiftUI
 
+/// A view that displays a horizontal scrollable row of media items under a category title.
+///
+/// This view is designed to showcase a collection of `MediaItem` instances,
+/// typically representing a specific category or genre, within a horizontal scroll view.
+/// Each item in the row is presented using a `MediaCard` and is wrapped in a `NavigationLink`
+/// to a `DetailView`.
 struct CategoryRow: View {
     let title: String
     let items: [MediaItem]
@@ -33,6 +39,10 @@ struct CategoryRow: View {
     }
 }
 
+/// A view that asynchronously loads and displays an image from a given URL.
+///
+/// This view handles the entire process of fetching an image from a remote URL,
+/// displaying a placeholder while loading, and then presenting the fetched image.
 struct PosterImage: View {
     let urlString: String
     @State private var image: Image?
@@ -57,6 +67,12 @@ struct PosterImage: View {
         }
     }
     
+    /// Asynchronously loads the image from the `urlString`.
+    ///
+    /// This method performs a network request to fetch image data.
+    /// Upon successful download, it updates the `image` state variable,
+    /// triggering a view refresh. It handles network errors by printing them
+    /// to the console, excluding cancellation errors.
     private func loadImage() async {
         guard let url = URL(string: urlString), image == nil else { return }
         isLoading = true
@@ -76,6 +92,12 @@ struct PosterImage: View {
     }
 }
 
+/// A view that displays a media item as a card, including its poster image and optional progress.
+///
+/// This view is responsible for rendering a `MediaItem` in a compact card format,
+/// suitable for display within collections like `CategoryRow`. It uses `PosterImage`
+/// to load and display the media item's poster and can optionally show a progress bar
+/// for series items.
 struct MediaCard: View {
     let item: MediaItem
     

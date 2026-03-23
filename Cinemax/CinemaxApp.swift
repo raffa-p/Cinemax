@@ -2,7 +2,6 @@
 //  CinemaxApp.swift
 //  Cinemax
 //
-//  Created by Raffaele Prota on 17/12/25.
 //
 
 import SwiftUI
@@ -43,5 +42,3 @@ struct CinemaxApp: App {
         }
     }
 }
-
-// MARK: - LOGIN VIEW

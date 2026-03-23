@@ -6,6 +6,11 @@
 
 import SwiftUI
 
+/// A SwiftUI view that displays a large "hero" section for a `MediaItem`,
+/// typically at the top of a screen. It features the item's image, title, type,
+/// and an action button or text depending on the media type.
+///
+/// This section serves as an entry point to the `DetailView` for the media item.
 struct HeroSection: View {
     let item: MediaItem
     var viewModel: LibraryViewModel

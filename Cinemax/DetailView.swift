@@ -9,6 +9,14 @@ import Observation
 import Foundation
 import Supabase
 
+/// A view that displays the detailed information for a specific `MediaItem`.
+///
+/// This view handles displaying media details such as title, description, image,
+/// match percentage, release year, duration or season count.
+/// It also provides functionality to interact with the item, like adding to "My List"
+/// or marking as watched, and for series, it allows browsing through seasons and episodes.
+///
+/// The view dynamically updates its content based on fetched enriched data and user interactions.
 struct DetailView: View {
     let item: MediaItem
     var viewModel: LibraryViewModel
@@ -17,6 +25,10 @@ struct DetailView: View {
     @State private var enrichedItem: MediaItem?
     @AppStorage("selectedTheme") private var selectedTheme: Theme = .system
     
+    /// A computed property that provides the most up-to-date `MediaItem` for display.
+    /// It prioritizes an item found in the `viewModel`'s `generalCacheContents`
+    /// (which might reflect real-time updates) or the `enrichedItem` if available,
+    /// falling back to the initial `item` if no enriched data is present.
     var liveItem: MediaItem {
         if let homeItem = viewModel.generalCacheContents.first(where: { $0.tmdbId == item.tmdbId }) {
             return homeItem
@@ -68,6 +80,8 @@ struct DetailView: View {
         }
     }
     
+    /// A computed property that determines the `ColorScheme?` based on the `selectedTheme`.
+    /// Returns `.light` for light theme, `.dark` for dark theme, and `nil` for system theme.
     var currentScheme: ColorScheme? {
         switch selectedTheme {
         case .light: return .light
@@ -76,6 +90,9 @@ struct DetailView: View {
         }
     }
     
+    /// A private `View` builder that displays the header image for the `MediaItem`.
+    /// It fetches the image asynchronously and displays a placeholder if the image fails to load.
+    /// It includes an overlay gradient for better text readability.
     private var headerImage: some View {
         ZStack(alignment: .bottom) {
             if let url = URL(string: liveItem.imageName) {
@@ -103,6 +120,9 @@ struct DetailView: View {
         .frame(height: 300)
     }
     
+    /// A private `View` builder that displays the title and essential metadata of the `MediaItem`.
+    /// This includes the title, match percentage, release year, and either the number of seasons
+    /// (for series) or the duration (for movies).
     private var titleAndMetadata: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(liveItem.title)
@@ -129,6 +149,9 @@ struct DetailView: View {
         }
     }
     
+    /// A private `View` builder that presents interactive action buttons for the `MediaItem`.
+    /// Includes a button to toggle the item's presence in "My List" and, for movies,
+    /// a button to toggle its watched status.
     @ViewBuilder
     private var actionButtons: some View {
         HStack(spacing: 12) {
@@ -173,6 +196,9 @@ struct DetailView: View {
         }
     }
     
+    /// A private `View` builder that displays the episodes section for `series` type `MediaItem`.
+    /// If the item is a series and has seasons, it provides a scrollable list of season buttons
+    /// and then lists the episodes for the selected season.
     @ViewBuilder
     private var episodesSection: some View {
         if liveItem.type == .series && !liveItem.seasons.isEmpty {
@@ -207,6 +233,14 @@ struct DetailView: View {
         }
     }
     
+    /// A private helper function that constructs a view for a single episode row.
+    /// Displays the episode's image, duration, number, title, plot, and a button
+    /// to toggle its watched status.
+    ///
+    /// - Parameters:
+    ///   - season: The `Season` object to which the episode belongs.
+    ///   - episode: The `Episode` object to be displayed in the row.
+    /// - Returns: A `View` representing a single episode row.
     private func episodeRow(season: Season, episode: Episode) -> some View {
         HStack(alignment: .center, spacing: 12) {
             ZStack(alignment: .bottomLeading) {
