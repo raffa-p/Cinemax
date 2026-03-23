@@ -2,6 +2,8 @@
 
 Cinemax is a simple and elegant iOS app to track your favorite movies and TV shows. Built with SwiftUI and Supabase.
 
+[Project's web page](https://cinemax.netsons.org/)
+
 ## 🚀 Main Features
 - **Discover:** Browse trending movies and shows.
 - **Track Progress:** Keep track of every episode you watch.
@@ -16,16 +18,18 @@ Cinemax is a simple and elegant iOS app to track your favorite movies and TV sho
 ## ⚙️ How to Setup
 1. **Clone the repo**
 2. **Add your Keys:** Open `SupabaseManager.swift` and add your URL and Anon Key.
-   <img width="600" alt="Supabase Config" src="https://github.com/user-attachments/assets/0f29fda0-8abc-4350-a8ec-44dceeb8bf7f" />
-3. **Database:** Ensure your project has the `watched_items`, `keepWatching`, and `PersonalList` tables.
-   <img width="600" alt="Supabase Schema" src="https://github.com/user-attachments/assets/57f0b33b-bfba-4239-8ea1-2fa9f3306565" />
+   <img width="600" alt="Supabase Configuration" src="https://github.com/user-attachments/assets/9f1c2a91-0faf-4fb9-81f8-1bd6c7eed915" />
+
+3. **Database:** Ensure your project has the `watched_items`, `keepWatching`, `PersonalList` and `profiles` tables.
+   <img width="600" alt="Supabase Schema" src="https://github.com/user-attachments/assets/8571019b-f8ae-4be5-97dd-51ac57d4b5b6" />
+
 4. **Run:** Open in Xcode and hit **Cmd + R**.
 
 ## 📱 Screenshots
 
-| Home | Details | Profile |
+| Home | Search | Profile |
 | :-: | :-: | :-: |
-| <img src="https://github.com/user-attachments/assets/cfd6b190-be33-4a75-b4f3-097cb0806613" width="200" /> | <img src="https://github.com/user-attachments/assets/810cf66a-972f-4dcd-af33-1cb76bb8bbd1" width="200" /> | <img width="200" src="https://github.com/user-attachments/assets/154f5d3b-2462-4dd0-9f29-ce8af8d2006f" /> |
+| <img width="200" src="https://github.com/user-attachments/assets/8dd1e7a3-32ed-4450-9d57-5578c314020c" />| <img width="200" src="https://github.com/user-attachments/assets/1af312ea-35ac-4291-bae8-b067c963a089" /> | <img width="200" src="https://github.com/user-attachments/assets/e1b46006-b42b-47aa-bb12-297215250378" /> |
 
 
 ---
