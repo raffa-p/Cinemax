@@ -2,14 +2,13 @@
 //  MovieService.swift
 //  Cinemax
 //
-//  Created by Raffaele Prota on 17/12/25.
 //
 
 import Foundation
 
 class MovieService {
     static let shared = MovieService()
-    private let apiKey = "bfc8c4fd035c0264266b8e38b209fba8"
+    private let apiKey = config.apiKey
     
     // Funzione generica per scaricare film o serie
     func fetchTrending() async throws -> [TMDBItem] {

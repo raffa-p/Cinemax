@@ -5,6 +5,45 @@
 //
 import SwiftUI
 
+/// A view model responsible for handling search functionality within the Cinemax app.
+/// 
+/// SearchViewModel orchestrates the search flow for movies and TV series by:
+/// - Debouncing user input using a cancellable Task to avoid firing excessive network requests
+/// - Querying the remote TMDB-backed MovieService for mixed media results
+/// - Converting raw TMDB results into the app’s `MediaItem` model, enriching each item with:
+///   - Watched status (for movies) derived from `LibraryViewModel`’s `watchedSet`
+///   - Presence in the user’s personal list via `LibraryViewModel`’s `personalList`
+/// - Publishing loading state and results to drive the UI
+///
+/// It is annotated with `@Observable`, enabling SwiftUI to react to changes in its published properties.
+///
+/// Usage:
+/// - Initialize with an instance of `LibraryViewModel`.
+/// - Bind `query` to a SwiftUI `.searchable` modifier.
+/// - Call `performSearch()` on query changes to trigger a debounced search.
+///
+/// Properties:
+/// - `libraryViewModel`: The shared library state used to compute watched/list membership.
+/// - `query`: The current search text; trimmed empty queries clear results and stop loading.
+/// - `results`: The latest array of `MediaItem` mapped from TMDB responses.
+/// - `isLoading`: Indicates whether a search is in progress; suitable for showing a spinner.
+/// - `searchTask`: The current cancellable search task used for debouncing.
+///
+/// Behavior:
+/// - Empty or whitespace-only queries reset `results` and set `isLoading` to false.
+/// - On successful fetch, results are mapped and published on the main actor.
+/// - On failure, results are cleared, loading is reset, and the error is logged.
+///
+/// Dependencies:
+/// - `LibraryViewModel` for personal list and watched state
+/// - `MovieService.shared.searchMedia(query:)` for remote search
+/// - `MediaItem` model for UI consumption
+///
+/// Notes:
+/// - Watched status is currently computed only for movies using the key format `movie_<tmdbId>`.
+/// - Media type inference prefers TMDB’s `mediaType == "movie"` or presence of a `title`.
+/// - If a poster URL is unavailable, `imageName` is set to an empty string.
+/// - If an overview is missing, a localized fallback description is provided ("Nessuna trama disponibile").
 @Observable
 class SearchViewModel {
     var libraryViewModel: LibraryViewModel
@@ -18,6 +57,21 @@ class SearchViewModel {
         self.libraryViewModel = libraryViewModel
     }
     
+    /// Performs a debounced search against TMDB and updates published state accordingly.
+    ///
+    /// Behavior:
+    /// - Queries `MovieService.shared.searchMedia(query:)` with the current `query`.
+    /// - Converts TMDB results into `MediaItem` values, enriching each with:
+    ///   - `inMyList` by checking `libraryViewModel.personalList`
+    ///   - `isWatched` for movies using `libraryViewModel.watchedSet` with key format `movie_<tmdbId>`
+    /// - Publishes `results` and `isLoading` updates on the main actor.
+    ///
+    /// Cancellation:
+    /// - The previous `searchTask` is cancelled before starting a new one.
+    /// - The task checks `Task.isCancelled` after the debounce delay to early-exit if needed.
+    ///
+    /// Error handling:
+    /// - On error, clears results, stops loading, and logs the underlying error.
     func performSearch() {
             searchTask?.cancel()
             
@@ -77,6 +131,35 @@ class SearchViewModel {
             }
         }
 }
+
+/// A SwiftUI view that provides a searchable interface for discovering movies and TV series.
+/// 
+/// SearchView composes the search UI and binds it to a `SearchViewModel` to handle:
+/// - Debounced querying of TMDB-backed content
+/// - Presenting results in a responsive grid with navigation to a detail screen
+///
+/// Responsibilities:
+/// - Hosts a `NavigationStack` with a search field via `.searchable`
+/// - Displays a `ProgressView` when `searchVM.isLoading` is true
+/// - Renders search results in a `LazyVGrid` with three flexible columns
+/// - Navigates to `DetailView` when a result is selected
+///
+/// Dependencies:
+/// - `LibraryViewModel`: Shared state for personal list and watched status, passed to both the view and its internal `SearchViewModel`
+/// - `SearchViewModel`: Manages the search query, loading state, and mapped `MediaItem` results
+/// - `PosterImage`: Asynchronously loads and displays poster images
+/// - `DetailView`: Destination view for presenting detailed information about a selected item
+///
+/// Initialization:
+/// - Requires a `LibraryViewModel` instance
+/// - Initializes an internal `SearchViewModel` using the provided `LibraryViewModel`
+///
+/// User Interaction:
+/// - The search text is bound to `searchVM.query`
+/// - Changes to the query trigger `searchVM.performSearch()` with debounce behavior handled by the view model
+///
+/// Notes:
+/// - The view model is stored in `@State` to maintain its lifecycle within the view.
 struct SearchView: View {
     var libraryViewModel: LibraryViewModel
     
