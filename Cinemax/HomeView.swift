@@ -33,30 +33,41 @@ struct HomeView: View {
         NavigationStack {
             ZStack {
                 Color(UIColor.systemBackground).ignoresSafeArea()
-                
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                if viewModel.isLoading {
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .scaleEffect(1.5)
                         
-                        if let hero = viewModel.heroMovie {
-                            HeroSection(item: hero, viewModel: viewModel) {
-                                viewModel.toggleItemWatched(itemId: hero.id)
-                            }
-                        }
-                        
-                        CategoryRow(title: "Di tendenza ora", items: viewModel.viewTrendings, viewModel: viewModel)
-                        if !viewModel.keepWatching.isEmpty {
-                            CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel)
-                                .animation(.default, value: viewModel.keepWatching)
-                        }
-                        if !viewModel.personalList.isEmpty || !viewModel.personalListSet.isEmpty {
-                            CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel)
-                                .animation(.default, value: viewModel.keepWatching)
-                        }
-                        
-                        Spacer(minLength: 100)
+                        Text("Caricamento catalogo...")
+                            .font(.callout)
+                            .foregroundStyle(.gray)
                     }
                 }
-                .ignoresSafeArea(edges: .top)
+                else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            
+                            if let hero = viewModel.heroMovie {
+                                HeroSection(item: hero, viewModel: viewModel) {
+                                    viewModel.toggleItemWatched(itemId: hero.id)
+                                }
+                            }
+                            
+                            CategoryRow(title: "Di tendenza ora", items: viewModel.viewTrendings, viewModel: viewModel)
+                            if !viewModel.keepWatching.isEmpty {
+                                CategoryRow(title: "Continua a guardare", items: viewModel.keepWatching, viewModel: viewModel)
+                                    .animation(.default, value: viewModel.keepWatching)
+                            }
+                            if !viewModel.personalList.isEmpty || !viewModel.personalListSet.isEmpty {
+                                CategoryRow(title: "La tua lista", items: viewModel.personalList, viewModel: viewModel)
+                                    .animation(.default, value: viewModel.keepWatching)
+                            }
+                            
+                            Spacer(minLength: 100)
+                        }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                }
             }
         }
     }

@@ -22,6 +22,8 @@ class LibraryViewModel {
     var heroMovie: MediaItem?
     var generalCacheContents: [MediaItem] = []
     
+    var isLoading: Bool = true
+    
     var keepWatching: [MediaItem] = []
     var personalList: [MediaItem] = []
     var watchedItems: [MediaItem] = []
@@ -36,6 +38,12 @@ class LibraryViewModel {
     var pendingEpisodeData: (itemId: UUID, seasonId: UUID, episodeId: UUID)? = nil
     
     init() {
+        defer{
+            Task {
+                @MainActor in
+                self.isLoading = false
+            }
+        }
         Task {
             await loadUserHistory()
             await viewWatchingMethod()
