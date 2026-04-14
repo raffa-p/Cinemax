@@ -37,7 +37,15 @@ struct HeroSection: View {
                         }
                     }
                     .frame(height: 550)
-                    LinearGradient(colors: [.clear, .black.opacity(0.8), .black], startPoint: .center, endPoint: .bottom)
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.4), // Inizia a sfumare da metà
+                            .init(color: .black.opacity(0.6), location: 0.7),
+                            .init(color: .black, location: 1.0)  // Nero solido in fondo
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 }
             }
             .buttonStyle(PlainButtonStyle())
@@ -49,9 +57,11 @@ struct HeroSection: View {
                     .allowsHitTesting(false)
                 Text(item.title)
                     .font(.system(size: 40, weight: .heavy))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white) // 2. FORZATO IL BIANCO (Il .primary su sfondi chiari in Light Mode diventerebbe nero e illeggibile sul gradiente)
                     .multilineTextAlignment(.center)
-                    .shadow(color: .black, radius: 10)
+                    // 3. DOPPIA OMBRA PER LEGGIBILITÀ ASSOLUTA
+                    .shadow(color: .black, radius: 2, x: 0, y: 1) // Ombra netta
+                    .shadow(color: .black.opacity(0.8), radius: 15, x: 0, y: 5) // Ombra diffusa
                     .padding(.horizontal)
                     .allowsHitTesting(false)
                 

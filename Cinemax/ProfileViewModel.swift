@@ -68,34 +68,11 @@ class ProfileViewModel {
     var showError: Bool = false
     var avatarURL: URL? = nil
     var isUploadingAvatar: Bool = false
+    let apiSupabase = SupabaseInterface()
+
     
     init(libraryViewModel: LibraryViewModel) {
         self.libraryViewModel = libraryViewModel
-    }
-    
-    // MARK: - CALCULATED DATA
-    
-    /// The total number of watched movie items in the user's library.
-    ///
-    /// This value is computed by filtering `libraryViewModel.watchedSet` for identifiers
-    /// that begin with the `"movie_"` prefix and returning the resulting count. It updates
-    /// automatically when the underlying watched set changes.
-    ///
-    /// - Note: Episodes are excluded; see `watchedEpisodesCount` for episode totals.
-    /// - Returns: An `Int` representing how many movies have been marked as watched.
-    var watchedMoviesCount: Int {
-        libraryViewModel.watchedSet.filter { $0.hasPrefix("movie_") }.count
-    }
-    
-    /// The total number of watched episode items in the user's library.
-    ///
-    /// This value is computed by filtering `libraryViewModel.watchedSet` for identifiers
-    /// that begin with the `"episode_"` prefix and returning the resulting count. It updates
-    /// automatically when the underlying watched set changes.
-    ///
-    /// - Returns: An `Int` representing how many episodes have been marked as watched.
-    var watchedEpisodesCount: Int {
-        libraryViewModel.watchedSet.filter { $0.hasPrefix("episode_") }.count
     }
         
     /// Fetches the authenticated user's display information (nickname or email) and avatar URL from Supabase.
@@ -286,17 +263,32 @@ class ProfileViewModel {
     /// - Returns: `true` if both the account deletion RPC and the subsequent sign-out operation
     ///   were successful, `false` otherwise.
     func deleteUserAccount() async -> Bool {
-            do {
-                try await SupabaseManager.shared.client.rpc("delete_user_account").execute()
-                
-                try await SupabaseManager.shared.client.auth.signOut()
-                
-                return true
-            } catch {
-                print("Errore durante eliminazione account: \(error)")
-                return false
-            }
+        do {
+            try await SupabaseManager.shared.client.rpc("delete_user_account").execute()
+            
+            try await SupabaseManager.shared.client.auth.signOut()
+            
+            return true
+        } catch {
+            print("Errore durante eliminazione account: \(error)")
+            return false
         }
+    }
+    
+    @discardableResult
+    func loadHistory() async -> Bool {
+        do {
+            let downloadedHistory = try await apiSupabase.loadWatched()
+            print("Cronologia scaricata! Trovati: \(downloadedHistory.count) elementi.")
+            await MainActor.run {
+                self.libraryViewModel.history = downloadedHistory
+            }
+            return true
+        } catch {
+            print("Errore caricamento cronologia visioni: \(error)")
+            return false
+        }
+    }
 }
 
 // MARK: - PROFILE PAGE LAYOUT
@@ -464,18 +456,45 @@ struct ProfileView: View {
                                 }
                             }
                             /*Text("Membro Standard").font(.caption).padding(.horizontal, 10).padding(.vertical, 4)
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(5)
-                                .foregroundStyle(.gray)*/
+                             .background(.ultraThinMaterial)
+                             .cornerRadius(5)
+                             .foregroundStyle(.gray)*/
                         }.padding(.top, 40)
                         
                         Divider().background(Color.gray.opacity(0.5))
                         
-                        HStack(spacing: 40) {
-                            StatBox(number: vm.watchedMoviesCount, label: "Film Visti")
-                            StatBox(number: vm.watchedEpisodesCount, label: "Episodi")
+                        if vm.libraryViewModel.history.count > 0 {
+                            VStack(alignment: .leading, spacing: 15) {
+                                Text("Cronologia Visioni")
+                                    .font(.title3)
+                                    .bold()
+                                    .padding(.horizontal)
+                                
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    LazyHStack(spacing: 15) {
+                                        ForEach(vm.libraryViewModel.history) { item in
+                                            VStack(alignment: .leading) {
+                                                
+                                                AsyncImage(url: URL(string: item.imageName)) { image in
+                                                    image.resizable().scaledToFill()
+                                                } placeholder: {
+                                                    Rectangle().fill(Color.gray.opacity(0.3))
+                                                }
+                                                .frame(width: 110, height: 160)
+                                                .cornerRadius(10)
+                                                
+                                                Text(item.title)
+                                                    .font(.caption)
+                                                    .lineLimit(1)
+                                                    .frame(width: 110, alignment: .leading)
+                                            }
+                                        }
+                                    }
+                                    .padding(.horizontal)
+                                }
+                            }
+                            .padding(.bottom, 20)
                         }
-                        .padding(.vertical)
                         
                         VStack(spacing: 0) {
                             NavigationLink(destination: SettingsView()) { SettingsRow(icon: "gear", title: "Impostazioni App") }
@@ -511,9 +530,14 @@ struct ProfileView: View {
             }
             .navigationTitle("Profilo")
             .navigationBarTitleDisplayMode(.inline)
-            .task { await vm.fetchUser() }
+            .task {
+                await vm.fetchUser()
+                await vm.loadHistory()
+            }
         }
     }
+    
+    
 }
 
 /// A SwiftUI `View` that displays a numerical statistic with a corresponding label.

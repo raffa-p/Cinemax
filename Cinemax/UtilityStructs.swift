@@ -250,3 +250,8 @@ struct watchedItem: Identifiable, Hashable, Codable {
         case show_id
     }
 }
+
+struct FullyWatchedInsert: Codable {
+    let tmdb_id: Int
+    let media_type: String
+}

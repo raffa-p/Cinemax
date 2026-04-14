@@ -25,10 +25,15 @@ class LibraryViewModel {
     var keepWatching: [MediaItem] = []
     var personalList: [MediaItem] = []
     var watchedItems: [MediaItem] = []
+    var history: [MediaItem] = []
     
     // Set per le ricerche rapide in memoria
     var watchedSet: Set<String> = []
     var personalListSet: Set<String> = []
+    
+    // Gestione episodi precedenti visti in automatico
+    var showCatchUpAlert: Bool = false
+    var pendingEpisodeData: (itemId: UUID, seasonId: UUID, episodeId: UUID)? = nil
     
     init() {
         Task {
@@ -53,8 +58,6 @@ class LibraryViewModel {
     }
     
     /// Asynchronously loads media items the user is currently watching from Supabase.
-    /// It also performs cleanup for series that are fully watched or have zero watched episodes,
-    /// moving them to `watched_items` or removing them from `keepWatching` accordingly.
     /// Enriches series with episode details and movies with duration if not already present.
     func viewWatchingMethod() async {
         do {
@@ -68,29 +71,7 @@ class LibraryViewModel {
                     let isFullyWatched = enriched.totalEpisodes > 0 && enriched.watchedEpisodes == enriched.totalEpisodes
                     let hasZeroWatched = enriched.watchedEpisodes == 0
                     
-                    if isFullyWatched || hasZeroWatched {
-                        
-                        if let tmdbId = enriched.tmdbId {
-                            Task {
-                                do {
-                                    try await SupabaseManager.shared.client.from("keepWatching")
-                                        .delete().eq("tmdb_id", value: tmdbId).execute()
-                                    print("Pulizia zombie eseguita per ID: \(tmdbId)")
-                                } catch {
-                                    print("Errore pulizia zombie: \(error)")
-                                }
-                                
-                                if isFullyWatched {
-                                    let seriesLog = watchedItem(tmdb_id: tmdbId, media_type: "Serie TV", season_number: nil, episode_number: nil)
-                                    do{
-                                        try await SupabaseManager.shared.client.from("watched_items").insert(seriesLog).execute()
-                                    } catch{
-                                        print("Errore inserimento in watched_items: \(error)")
-                                    }
-                                }
-                            }
-                        }
-                    } else {
+                    if !isFullyWatched && !hasZeroWatched {
                         enrichedTemp.append(enriched)
                     }
                 } else {
@@ -179,10 +160,10 @@ class LibraryViewModel {
             do {
                 if isNowWatched {
                     let log = watchedItem(tmdb_id: tmdbId, media_type: "movie", season_number: nil, episode_number: nil)
-                    try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
+                    try await SupabaseManager.shared.client.from("fullyWatched").insert(log).execute()
                     watchedSet.insert(key)
                 } else {
-                    try await SupabaseManager.shared.client.from("watched_items").delete()
+                    try await SupabaseManager.shared.client.from("fullyWatched").delete()
                         .eq("tmdb_id", value: tmdbId).eq("media_type", value: "movie").execute()
                     watchedSet.remove(key)
                 }
@@ -226,149 +207,240 @@ class LibraryViewModel {
         // Update DB
         Task {
             do {
+                let log = personalListItem(tmdb_id: tmdbId, media_type: mediaTypeStr)
                 if newState {
-                    let log = personalListItem(tmdb_id: tmdbId, media_type: mediaTypeStr)
                     try await SupabaseManager.shared.client.from("PersonalList").insert(log).execute()
                     personalListSet.insert("content_\(tmdbId)")
+                    print("Inserito elemento \(log.media_type ?? "") con id \(tmdbId) in PersonalList")
                 } else {
-                    try await SupabaseManager.shared.client.from("PersonalList").delete()
-                        .eq("tmdb_id", value: tmdbId)
-                        .eq("media_type", value: mediaTypeStr).execute()
+                    try await SupabaseManager.shared.client.from("PersonalList").delete().match(["tmdb_id": tmdbId, "media_type": mediaTypeStr]).execute()
                     personalListSet.remove("\(mediaTypeStr)_\(tmdbId)")
+                    print("Rimosso elemento \(log.media_type ?? "") con id \(tmdbId) da PersonalList")
                 }
-            } catch { print("Errore aggiunta in lista: \(error)") }
+            } catch let error as PostgrestError where error.code == "23505" {
+                print("L'elemento era già presente in lista")
+            } catch {
+                let errorString = String(describing: error)
+                if errorString.contains("23505") {
+                    print("L'elemento era già presente in lista")
+                } else {
+                    print("Errore aggiunta/rimozione elemento \(tmdbId) da PersonalList: \(error)")
+                }
+            }
         }
     }
     
-    /// Toggles the watched status of a specific episode within a series.
-    /// Updates the `isWatched` property for the episode across all relevant `MediaItem` arrays
-    /// (`generalCacheContents`, `keepWatching`, `personalList`, `viewTrendings`, `heroMovie`).
-    /// Manages the `keepWatching` list based on the series' overall watch progress (in progress, fully watched, or not started).
-    /// Persists the episode's watch status and series progress updates to Supabase "watched_items" and "keepWatching" tables.
-    /// - Parameters:
-    ///   - itemId: The `UUID` of the series `MediaItem`.
-    ///   - seasonId: The `UUID` of the `Season` containing the episode.
-    ///   - episodeId: The `UUID` of the `Episode` to toggle.
-    func toggleEpisodeWatched(itemId: UUID, seasonId: UUID, episodeId: UUID) {
-        guard let itemIndex = generalCacheContents.firstIndex(where: { $0.id == itemId }),
-              let seasonIndex = generalCacheContents[itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
-              let episodeIndex = generalCacheContents[itemIndex].seasons[seasonIndex].episodes.firstIndex(where: { $0.id == episodeId }),
-              let tmdbSeriesId = generalCacheContents[itemIndex].tmdbId else { return }
-        
-        let seasonNum = generalCacheContents[itemIndex].seasons[seasonIndex].number
-        let episodeNum = generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].number
-        
-        let isNowWatched = !generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].isWatched
-        let key = generateKey(id: tmdbSeriesId, season: seasonNum, episode: episodeNum)
-        
-        if isNowWatched {
-            watchedSet.insert(key)
-        } else {
-            watchedSet.remove(key)
-        }
-        
-        
-        func updateEpisodes(in array: inout [MediaItem]) {
-            for i in array.indices where array[i].tmdbId == tmdbSeriesId {
-                if let sIdx = array[i].seasons.firstIndex(where: { $0.number == seasonNum }),
-                   let eIdx = array[i].seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
-                    array[i].seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
+    // 1. IL CONTROLLORE
+        func toggleEpisodeWatched(itemId: UUID, seasonId: UUID, episodeId: UUID) {
+            guard let itemIndex = generalCacheContents.firstIndex(where: { $0.id == itemId }),
+                  let seasonIndex = generalCacheContents[itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
+                  let episodeIndex = generalCacheContents[itemIndex].seasons[seasonIndex].episodes.firstIndex(where: { $0.id == episodeId }) else { return }
+            
+            let item = generalCacheContents[itemIndex]
+            let targetSeasonNum = item.seasons[seasonIndex].number
+            let targetEpisodeNum = item.seasons[seasonIndex].episodes[episodeIndex].number
+            let isNowWatched = !item.seasons[seasonIndex].episodes[episodeIndex].isWatched
+            
+            // Se stiamo segnando come "Visto", controlliamo i precedenti
+            if isNowWatched {
+                var hasUnwatchedPrevious = false
+                
+                for season in item.seasons {
+                    if season.number < targetSeasonNum {
+                        // Stagioni precedenti: c'è un episodio non visto?
+                        if season.episodes.contains(where: { !$0.isWatched }) {
+                            hasUnwatchedPrevious = true
+                            break
+                        }
+                    } else if season.number == targetSeasonNum {
+                        // Stessa stagione: c'è un episodio precedente non visto?
+                        if season.episodes.contains(where: { $0.number < targetEpisodeNum && !$0.isWatched }) {
+                            hasUnwatchedPrevious = true
+                            break
+                        }
+                    }
+                }
+                
+                // Se ci sono episodi saltati, blocchiamo tutto e mostriamo l'avviso
+                if hasUnwatchedPrevious {
+                    self.pendingEpisodeData = (itemId, seasonId, episodeId)
+                    self.showCatchUpAlert = true
+                    return
                 }
             }
+            
+            // Se tutto è in regola (o stiamo togliendo la spunta), procediamo normalmente
+            executeToggleEpisodeWatched(itemId: itemId, seasonId: seasonId, episodeId: episodeId)
         }
-        
-        updateEpisodes(in: &generalCacheContents)
-        updateEpisodes(in: &keepWatching)
-        updateEpisodes(in: &personalList)
-        updateEpisodes(in: &viewTrendings)
-        
-        if heroMovie?.tmdbId == tmdbSeriesId {
-            if let sIdx = heroMovie?.seasons.firstIndex(where: { $0.number == seasonNum }),
-               let eIdx = heroMovie?.seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
-                heroMovie?.seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
-            }
-        }
-        
-        guard let updatedItemIndex = generalCacheContents.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) else { return }
-        let updatedMediaItem = generalCacheContents[updatedItemIndex]
-        
-        let isFullyWatched = updatedMediaItem.watchedEpisodes == updatedMediaItem.totalEpisodes
-        let isInProgress = updatedMediaItem.watchedEpisodes > 0 && !isFullyWatched
-        
-        // Managing "CONTINUA A GUARDARE"
-        if isInProgress {
-            if let localIndex = keepWatching.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) {
-                keepWatching[localIndex] = updatedMediaItem // Aggiorna barra progresso
+
+        // 2. IL TUO CODICE ORIGINALE (Rinominato)
+        func executeToggleEpisodeWatched(itemId: UUID, seasonId: UUID, episodeId: UUID) {
+            guard let itemIndex = generalCacheContents.firstIndex(where: { $0.id == itemId }),
+                  let seasonIndex = generalCacheContents[itemIndex].seasons.firstIndex(where: { $0.id == seasonId }),
+                  let episodeIndex = generalCacheContents[itemIndex].seasons[seasonIndex].episodes.firstIndex(where: { $0.id == episodeId }),
+                  let tmdbSeriesId = generalCacheContents[itemIndex].tmdbId else { return }
+            
+            let seasonNum = generalCacheContents[itemIndex].seasons[seasonIndex].number
+            let episodeNum = generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].number
+            
+            let isNowWatched = !generalCacheContents[itemIndex].seasons[seasonIndex].episodes[episodeIndex].isWatched
+            let key = generateKey(id: tmdbSeriesId, season: seasonNum, episode: episodeNum)
+            
+            if isNowWatched {
+                watchedSet.insert(key)
             } else {
-                keepWatching.insert(updatedMediaItem, at: 0) // Aggiunge alla riga
+                watchedSet.remove(key)
             }
-        } else {
-            keepWatching.removeAll(where: { $0.tmdbId == tmdbSeriesId })
-        }
-        
-        // Updating DB
-        Task {
-            do {
-                if isNowWatched {
-                    let log = watchedItem(tmdb_id: tmdbSeriesId, media_type: "episode", season_number: seasonNum, episode_number: episodeNum)
-                    try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
-                } else {
-                    try await SupabaseManager.shared.client.from("watched_items").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "episode")
-                        .eq("season_number", value: seasonNum).eq("episode_number", value: episodeNum).execute()
-                }
-                
-                struct KeepWatchInsert: Codable { let tmdb_id: Int }
-                
-                if isFullyWatched {
-                    do {
-                        try await SupabaseManager.shared.client.from("keepWatching").delete()
-                            .eq("tmdb_id", value: tmdbSeriesId).execute()
-                        print("Serie completata: cancellata da keepWatching!")
-                    } catch { print("Errore delete keepWatching: \(error)") }
-                    
-                    let seriesLog = watchedItem(tmdb_id: tmdbSeriesId, media_type: "Serie TV", season_number: nil, episode_number: nil)
-                    do{
-                        try await SupabaseManager.shared.client.from("watched_items").insert(seriesLog).execute()
-                    } catch{
-                        print("Errore inserimento in watched_items: \(error)")
-                    }
-                    
-                } else if isInProgress {
-                    do{
-                        try await SupabaseManager.shared.client.from("keepWatching").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).execute()
-                    } catch{
-                        print("Errore inserimento SERIE TV in keepWatching: \(error)")
-                    }
-                    
-                    let keepLog = KeepWatchInsert(tmdb_id: tmdbSeriesId)
-                    try await SupabaseManager.shared.client.from("keepWatching").insert(keepLog).execute()
-                    
-                    do{
-                        try await SupabaseManager.shared.client.from("watched_items").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "Serie TV").execute()
-                    } catch{
-                        print("Errore rimozione SERIE TV da watched_items: \(error)")
-                    }
-                    
-                } else {
-                    do{
-                        try await SupabaseManager.shared.client.from("keepWatching").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).execute()
-                    } catch{
-                        print("Errore rimozione SERIE TV da keepWatching: \(error)")
-                    }
-                    do{
-                        try await SupabaseManager.shared.client.from("watched_items").delete()
-                        .eq("tmdb_id", value: tmdbSeriesId).eq("media_type", value: "Serie TV").execute()
-                    } catch{
-                        print("Errore rimozione SERIE TV da watched_items: \(error)")
+            
+            func updateEpisodes(in array: inout [MediaItem]) {
+                for i in array.indices where array[i].tmdbId == tmdbSeriesId {
+                    if let sIdx = array[i].seasons.firstIndex(where: { $0.number == seasonNum }),
+                       let eIdx = array[i].seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
+                        array[i].seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
                     }
                 }
-            } catch { print("Errore salvataggio Supabase: \(error)") }
+            }
+            
+            updateEpisodes(in: &generalCacheContents)
+            updateEpisodes(in: &keepWatching)
+            updateEpisodes(in: &personalList)
+            updateEpisodes(in: &viewTrendings)
+            
+            if heroMovie?.tmdbId == tmdbSeriesId {
+                if let sIdx = heroMovie?.seasons.firstIndex(where: { $0.number == seasonNum }),
+                   let eIdx = heroMovie?.seasons[sIdx].episodes.firstIndex(where: { $0.number == episodeNum }) {
+                    heroMovie?.seasons[sIdx].episodes[eIdx].isWatched = isNowWatched
+                }
+            }
+            
+            guard let updatedItemIndex = generalCacheContents.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) else { return }
+            let updatedMediaItem = generalCacheContents[updatedItemIndex]
+            
+            let isFullyWatched = updatedMediaItem.watchedEpisodes == updatedMediaItem.totalEpisodes
+            let isInProgress = updatedMediaItem.watchedEpisodes > 0 && !isFullyWatched
+            
+            // Managing "CONTINUA A GUARDARE"
+            if isInProgress {
+                if let localIndex = keepWatching.firstIndex(where: { $0.tmdbId == tmdbSeriesId }) {
+                    keepWatching[localIndex] = updatedMediaItem // Aggiorna barra progresso
+                } else {
+                    keepWatching.insert(updatedMediaItem, at: 0) // Aggiunge alla riga
+                }
+            } else {
+                keepWatching.removeAll(where: { $0.tmdbId == tmdbSeriesId })
+            }
+            
+            // Updating DB
+            Task {
+                let log = watchedItem(tmdb_id: tmdbSeriesId, media_type: "episode", season_number: seasonNum, episode_number: episodeNum)
+                do {
+                    if isNowWatched {
+                        try await SupabaseManager.shared.client.from("watched_items").insert(log).execute()
+                        print("Inserito in WATCHED_ITEMS \(tmdbSeriesId), episodio: \(episodeNum), stagione: \(seasonNum)")
+                    }
+                    else {
+                        try await SupabaseManager.shared.client.from("watched_items").delete().match(["tmdb_id": tmdbSeriesId, "season_number": seasonNum, "episode_number": episodeNum]).execute()
+                        print("Rimosso da WATCHED_ITEMS \(tmdbSeriesId), episodio: \(episodeNum), stagione: \(seasonNum)")
+                        try await SupabaseManager.shared.client.from("fullyWatched").delete().match(["tmdb_id": tmdbSeriesId]).execute()
+                        print("Rimosso da fullyWatched \(tmdbSeriesId)")
+                    }
+                } catch { print("Errore aggiornamento episodio: \(error)") }
+                do{
+                    if isInProgress && !isFullyWatched {
+                        try await SupabaseManager.shared.client.from("keepWatching").insert(["tmdb_id": tmdbSeriesId]).execute()
+                        print("Inserito in keepWatching \(tmdbSeriesId)")
+                    }
+                    else {
+                        try await SupabaseManager.shared.client.from("keepWatching").delete().match(["tmdb_id": tmdbSeriesId]).execute()
+                        print("Rimosso da keepWatching \(tmdbSeriesId)")
+                        try await SupabaseManager.shared.client.from("fullyWatched").insert(FullyWatchedInsert(tmdb_id: log.tmdb_id!, media_type: "Serie_TV")).execute()
+                        print("Inserito in fullyWatched \(tmdbSeriesId)")
+                    }
+                } catch let error as PostgrestError where error.code == "23505" {
+                    print("L'elemento era già presente in keepWatching")
+                } catch {
+                    let errorString = String(describing: error)
+                    if errorString.contains("23505") {
+                        print("L'elemento era già presente in keepWatching")
+                    } else {
+                        print("Errore aggiunta/rimozione elemento \(tmdbSeriesId) da keepWatching: \(error)")
+                    }
+                }
+            }
         }
-    }
+
+        // 3. LA FUNZIONE CHE SEGNA TUTTI I PRECEDENTI IN BATCH
+        func markEpisodeAndAllPreviousAsWatched() {
+            guard let data = pendingEpisodeData,
+                  let itemIndex = generalCacheContents.firstIndex(where: { $0.id == data.itemId }),
+                  let targetSeasonIndex = generalCacheContents[itemIndex].seasons.firstIndex(where: { $0.id == data.seasonId }),
+                  let targetEpisodeIndex = generalCacheContents[itemIndex].seasons[targetSeasonIndex].episodes.firstIndex(where: { $0.id == data.episodeId }),
+                  let tmdbSeriesId = generalCacheContents[itemIndex].tmdbId else { return }
+
+            let targetSeasonNum = generalCacheContents[itemIndex].seasons[targetSeasonIndex].number
+            let targetEpisodeNum = generalCacheContents[itemIndex].seasons[targetSeasonIndex].episodes[targetEpisodeIndex].number
+
+            var episodesToInsert: [watchedItem] = []
+
+            // 1. Aggiornamento Locale
+            for sIdx in generalCacheContents[itemIndex].seasons.indices {
+                let sNum = generalCacheContents[itemIndex].seasons[sIdx].number
+                
+                if sNum <= targetSeasonNum {
+                    for eIdx in generalCacheContents[itemIndex].seasons[sIdx].episodes.indices {
+                        let eNum = generalCacheContents[itemIndex].seasons[sIdx].episodes[eIdx].number
+                        
+                        // Selettore: Episodio precedente o uguale a quello cliccato
+                        if sNum < targetSeasonNum || (sNum == targetSeasonNum && eNum <= targetEpisodeNum) {
+                            if !generalCacheContents[itemIndex].seasons[sIdx].episodes[eIdx].isWatched {
+                                
+                                // Segna come visto localmente
+                                generalCacheContents[itemIndex].seasons[sIdx].episodes[eIdx].isWatched = true
+                                let key = generateKey(id: tmdbSeriesId, season: sNum, episode: eNum)
+                                watchedSet.insert(key)
+                                
+                                // Prepara il log per il DB
+                                episodesToInsert.append(watchedItem(tmdb_id: tmdbSeriesId, media_type: "episode", season_number: sNum, episode_number: eNum))
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Sincronizza l'item aggiornato nelle altre liste
+            let updatedItem = generalCacheContents[itemIndex]
+            if let idx = keepWatching.firstIndex(where: { $0.id == data.itemId }) { keepWatching[idx] = updatedItem }
+            if let idx = personalList.firstIndex(where: { $0.id == data.itemId }) { personalList[idx] = updatedItem }
+            if let idx = viewTrendings.firstIndex(where: { $0.id == data.itemId }) { viewTrendings[idx] = updatedItem }
+            if heroMovie?.id == data.itemId { heroMovie = updatedItem }
+            
+            // 2. Inserimento di massa in Supabase
+            Task {
+                do {
+                    if !episodesToInsert.isEmpty {
+                        try await SupabaseManager.shared.client.from("watched_items").insert(episodesToInsert).execute()
+                        print("Inseriti \(episodesToInsert.count) episodi precedenti in WATCHED_ITEMS")
+                    }
+                } catch {
+                    print("Errore aggiornamento di massa: \(error)")
+                }
+                do{
+                    let isFullyWatched = updatedItem.watchedEpisodes == updatedItem.totalEpisodes
+                    print("Serie \(tmdbSeriesId) conclusa? \(isFullyWatched)")
+                    if isFullyWatched {
+                        try await SupabaseManager.shared.client.from("fullyWatched").insert(FullyWatchedInsert(tmdb_id: tmdbSeriesId, media_type: "Serie_TV")).execute()
+                        try await SupabaseManager.shared.client.from("keepWatching").delete().match(["tmdb_id": tmdbSeriesId]).execute()
+                        print("Rimosso da keepWatching \(tmdbSeriesId)")
+                    } else {
+                        // Forza il riavvio della serie in keep watching
+                        try await SupabaseManager.shared.client.from("keepWatching").insert(["tmdb_id": tmdbSeriesId]).execute()
+                    }
+                } catch { print("Errore aggiornamento serie conclusa: \(error)") }
+            }
+            
+            // Pulisci i dati temporanei
+            pendingEpisodeData = nil
+        }
     
     // MARK: - DOWNLOAD DETAILS
     /// Asynchronously loads detailed season and episode information for a given series `MediaItem` from an external movie service.

@@ -19,7 +19,7 @@ import Supabase
 /// The view dynamically updates its content based on fetched enriched data and user interactions.
 struct DetailView: View {
     let item: MediaItem
-    var viewModel: LibraryViewModel
+    @Bindable var viewModel: LibraryViewModel
     
     @State private var selectedSeasonId: UUID?
     @State private var enrichedItem: MediaItem?
@@ -66,6 +66,21 @@ struct DetailView: View {
                 viewModel.generalCacheContents.append(item)
             }
         }
+        .alert("Episodi precedenti saltati", isPresented: $viewModel.showCatchUpAlert) {
+            Button("Segna tutti come visti") {
+                viewModel.markEpisodeAndAllPreviousAsWatched()
+            }
+            Button("Solo questo episodio") {
+                if let data = viewModel.pendingEpisodeData {
+                    viewModel.executeToggleEpisodeWatched(itemId: data.itemId, seasonId: data.seasonId, episodeId: data.episodeId)
+                }
+            }
+            Button("Annulla", role: .cancel) {
+                viewModel.pendingEpisodeData = nil
+            }
+        } message: {
+            Text("Sembra che tu non abbia segnato alcuni episodi precedenti come visti. Vuoi aggiornarli automaticamente?")
+        }
         .task {
             if item.type == .series {
                 let updated = await viewModel.loadEpisodes(for: item)
@@ -79,6 +94,7 @@ struct DetailView: View {
             }
         }
     }
+    
     
     /// A computed property that determines the `ColorScheme?` based on the `selectedTheme`.
     /// Returns `.light` for light theme, `.dark` for dark theme, and `nil` for system theme.

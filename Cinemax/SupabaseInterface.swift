@@ -172,6 +172,68 @@ class SupabaseInterface {
         }
     }
     
+    func loadWatched() async throws -> [MediaItem] {
+        do {
+            let entries: [watchedItem] = try await SupabaseManager.shared.client
+                .from("fullyWatched")
+                .select()
+                .execute()
+                .value
+            
+            var detailedList: [MediaItem] = []
+            
+            // download details
+            for entry in entries {
+                guard let safeId = entry.tmdb_id else { continue }
+                
+                do {
+                    // first try to download as tv show. if not it's a film (catch statement)
+                    let tvDetails = try await MovieService.shared.fetchShowDetails(id: safeId)
+                    
+                    let item = MediaItem(
+                        tmdbId: tvDetails.id,
+                        title: tvDetails.name ?? tvDetails.title ?? "Sconosciuto",
+                        imageName: tvDetails.fullPosterURL?.absoluteString ?? "",
+                        type: .series,
+                        matchPercentage: Int((tvDetails.voteAverage ?? 0) * 10),
+                        year: String((tvDetails.firstAirDate ?? "").prefix(4)),
+                        description: tvDetails.overview ?? "Nessuna trama disponibile",
+                        isWatched: false,
+                        seasons: []
+                    )
+                    detailedList.append(item)
+                    
+                } catch {
+                    do {
+                        let movieDetails = try await MovieService.shared.fetchMovieDetails(id: safeId)
+                        
+                        let item = MediaItem(
+                            tmdbId: movieDetails.id,
+                            title: movieDetails.name ?? movieDetails.title ?? "Sconosciuto",
+                            imageName: movieDetails.fullPosterURL?.absoluteString ?? "",
+                            type: .movie,
+                            matchPercentage: Int((movieDetails.voteAverage ?? 0) * 10),
+                            year: String((movieDetails.releaseDate ?? "").prefix(4)),
+                            description: movieDetails.overview ?? "Nessuna trama disponibile",
+                            isWatched: false,
+                            seasons: []
+                        )
+                        detailedList.append(item)
+                        
+                    } catch {
+                        print("ID \(safeId) inesistente.")
+                    }
+                }
+            }
+            
+            return detailedList
+            
+        } catch {
+            print("Errore caricamento elementi da fullyWatched: \(error)")
+            return []
+        }
+    }
+    
     /// Fetches the user's personal list from the Supabase "PersonalList" table and enriches each entry with full details from TMDB.
     ///
     /// This method performs two steps:

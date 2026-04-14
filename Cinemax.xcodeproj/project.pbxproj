@@ -19,16 +19,28 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				TODO.md,
 			);
 			target = 877D53A52EF312EA00F110C1 /* Cinemax */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		8703C9912F8BB6C9000B9DBD /* Exceptions for "Cinemax" folder in "Compile Sources" phase from "Cinemax" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 877D53A22EF312EA00F110C1 /* Sources */;
+			membershipExceptions = (
+				TODO.md,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		877D53A82EF312EA00F110C1 /* Cinemax */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				87C459432F69CBDC0075B8F8 /* Exceptions for "Cinemax" folder in "Cinemax" target */,
+				8703C9912F8BB6C9000B9DBD /* Exceptions for "Cinemax" folder in "Compile Sources" phase from "Cinemax" target */,
 			);
 			path = Cinemax;
 			sourceTree = "<group>";
